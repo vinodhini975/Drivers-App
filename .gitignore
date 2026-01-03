@@ -1,0 +1,40 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/app/debug
+android/app/profile
+android/app/release
+
+# Firebase 
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/.last_build_id
+
+# Obfuscation / symbols
+app.*.symbols
+app.*.map.json

@@ -1,0 +1,56 @@
+name: driver_app
+description: "Driver location tracking app for waste collection vehicles."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.10.4 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ===== FIREBASE (Stable versions for background use) =====
+  firebase_core: ^2.32.0
+  cloud_firestore: ^4.17.5
+  firebase_auth: ^4.17.9
+
+  # ===== LOCATION + PERMISSIONS =====
+  geolocator: ^12.0.0
+  permission_handler: ^11.3.1
+
+  # ===== BACKGROUND SERVICE =====
+  flutter_background_service: ^5.0.5
+  flutter_background_service_android: ^6.1.0
+
+  # ===== STORAGE FOR USER LOGIN =====
+  shared_preferences: ^2.2.2
+
+
+  # ===== UI & Icons =====
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # ===== APP ICON GENERATOR =====
+  flutter_launcher_icons: ^0.13.1
+
+# ===== APP ICON CONFIGURATION =====
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon.png"
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/app_icon_foreground.png"
+
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/app_icon.png
+    - assets/app_icon_foreground.png
