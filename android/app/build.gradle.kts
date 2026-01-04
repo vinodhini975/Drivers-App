@@ -37,11 +37,12 @@ android {
 
     buildTypes {
     release {
+        // Use release signing config from debug for testing
         signingConfig = signingConfigs.getByName("debug")
 
-        // Disable shrinking
-        isMinifyEnabled = false
-        isShrinkResources = false
+        // Enable code shrinking and obfuscation
+        isMinifyEnabled = true
+        isShrinkResources = true
 
         proguardFiles(
             getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -55,7 +56,6 @@ android {
         isShrinkResources = false
     }
 }
-
 }
 
 flutter {
@@ -71,4 +71,10 @@ dependencies {
 
     // Required for multidex support
     implementation("androidx.multidex:multidex:2.0.1")
+    
+    // Add core library desugaring for newer Java APIs on older Android versions
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    
+    // Google Play Services for location - use only the required parts
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 }

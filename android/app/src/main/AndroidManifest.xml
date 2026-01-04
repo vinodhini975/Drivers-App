@@ -19,10 +19,13 @@
 
     <!-- 🔋 Stability -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    
+    <!-- Battery optimization -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
+        android:name="androidx.multidex.MultiDexApplication"
         android:label="Driver App"
-        android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
 
@@ -31,6 +34,13 @@
             android:name="com.ekasetiawans.flutter_background_service.BackgroundService"
             android:foregroundServiceType="location"
             android:exported="true" />
+        
+        <!-- Native location tracking service -->
+        <service
+            android:name=".LocationTrackingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
         <!-- 🚀 Main Activity -->
         <activity
