@@ -41,9 +41,11 @@ class LocationService {
       // 3️⃣ Get current location (safe)
       // -------------------------------
       final Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        desiredAccuracy: LocationAccuracy.medium, // Changed from high to medium to save battery
         timeLimit: const Duration(seconds: 15),
       );
+
+      debugPrint("📍 LocationService: Got position for $username: ${position.latitude}, ${position.longitude}");
 
       // -------------------------------
       // 4️⃣ Firestore reference
@@ -93,7 +95,6 @@ class LocationService {
               'lastUpdated': FieldValue.serverTimestamp(),
             }, SetOptions(merge: true));
       } catch (_) {}
-
       return false;
     }
   }
