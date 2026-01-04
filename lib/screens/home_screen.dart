@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../services/location_service.dart';
 import '../services/native_location_service.dart';
@@ -86,20 +87,32 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove("driver_username");
-    await _setTrackingState(false);
+    try {
+      // Sign out from Firebase
+      await FirebaseAuth.instance.signOut();
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove("driver_username");
+      await _setTrackingState(false);
 
-    // Stop native tracking service
-    await NativeLocationService.stopTracking();
-    LocationPollingService.stopPolling();
+      // Stop native tracking service
+      await NativeLocationService.stopTracking();
+      LocationPollingService.stopPolling();
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-    );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+      );
+    } catch (e) {
+      print("Error during logout: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Logout failed. Please try again.")),
+        );
+      }
+    }
   }
 
   @override
@@ -150,7 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: Icon(Icons.logout),
             tooltip: "Logout",
             onPressed: _logout,
           ),
@@ -398,8 +411,39 @@ class _HomeScreenState extends State<HomeScreen> {
                     title: "Send Location",
                     subtitle: "Update current location",
                     color: Colors.blue,
-                    onPressed: () {
-                      LocationService.sendCurrentLocation(widget.username);
+                    onPressed: () async {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("Getting location..."),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+
+                      try {
+                        bool success = await LocationService.sendCurrentLocation(widget.username);
+                        if (!mounted) return;
+                        
+                        if (success) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text("Location updated successfully")),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text("Failed to update location. Check GPS/Internet."),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text("Error: $e"),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
                     },
                   ),
                   _buildActionCard(
@@ -427,7 +471,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: Colors.black87,
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
 
               Row(
                 children: [

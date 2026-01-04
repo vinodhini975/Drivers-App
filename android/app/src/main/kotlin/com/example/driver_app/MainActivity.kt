@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
+import androidx.core.content.ContextCompat
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "location_tracking_service"
@@ -99,7 +100,8 @@ class MainActivity : FlutterActivity() {
         if (username != null) {
             val intent = Intent(this, LocationTrackingService::class.java)
             intent.putExtra("username", username)
-            startService(intent)
+            // Use ContextCompat to handle foreground service start compatibly across versions
+            ContextCompat.startForegroundService(this, intent)
         }
     }
     

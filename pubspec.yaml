@@ -15,15 +15,11 @@ dependencies:
   firebase_core: ^2.32.0
   cloud_firestore: ^4.17.5
   firebase_auth: ^4.17.9
+  google_sign_in: ^6.1.6
 
   # ===== LOCATION + PERMISSIONS =====
   geolocator: ^12.0.0
   permission_handler: ^11.3.1
-
-  # ===== BACKGROUND SERVICE =====
-  # Remove flutter_background_service since we're using native service
-  # flutter_background_service: ^5.0.5
-  # flutter_background_service_android: ^6.1.0
 
   # ===== STORAGE FOR USER LOGIN =====
   shared_preferences: ^2.2.2

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
@@ -107,13 +108,15 @@ class DriverApp extends StatelessWidget {
           fillColor: Colors.grey[50],
         ),
       ),
-      home: _InitialScreen(), // Changed to a StatefulWidget to handle loading properly
+      home: const _InitialScreen(), // Changed to a StatefulWidget to handle loading properly
     );
   }
 }
 
 // New StatefulWidget to handle initial screen loading
 class _InitialScreen extends StatefulWidget {
+  const _InitialScreen();
+
   @override
   State<_InitialScreen> createState() => _InitialScreenState();
 }
@@ -126,21 +129,42 @@ class _InitialScreenState extends State<_InitialScreen> {
   void initState() {
     super.initState();
     _loadInitialScreen();
+    
+    // Listen for auth state changes
+    FirebaseAuth.instance.authStateChanges().listen((User? user) {
+      if (mounted) {
+        _loadInitialScreen();
+      }
+    });
   }
 
   Future<void> _loadInitialScreen() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedUsername = prefs.getString("driver_username");
-
-      if (savedUsername != null && savedUsername.isNotEmpty) {
-        // Username exists, go to home screen
+      // Check if user is signed in with Firebase
+      final User? user = FirebaseAuth.instance.currentUser;
+      
+      if (user != null) {
+        // User is signed in, check if we have the username in shared prefs
+        final prefs = await SharedPreferences.getInstance();
+        String? savedUsername = prefs.getString("driver_username");
+        
+        // If we don't have a username saved, try to extract it from the email
+        if (savedUsername == null || savedUsername.isEmpty) {
+          // Extract username from email (remove @driverapp.com part)
+          String email = user.email ?? '';
+          if (email.endsWith('@driverapp.com')) {
+            savedUsername = email.replaceAll('@driverapp.com', '');
+            await prefs.setString("driver_username", savedUsername);
+          }
+        }
+        
+        // Use the '??' operator to provide a fallback
         setState(() {
-          _initialScreen = HomeScreen(username: savedUsername);
+          _initialScreen = HomeScreen(username: savedUsername ?? "Guest");
           _isLoading = false;
         });
       } else {
-        // No saved username, go to login
+        // No user signed in, go to login
         setState(() {
           _initialScreen = const LoginScreen();
           _isLoading = false;

@@ -17,6 +17,7 @@ import io.flutter.plugin.common.MethodCall
 import android.app.PendingIntent
 import android.os.PowerManager
 import java.util.concurrent.TimeUnit
+import android.content.pm.ServiceInfo
 
 class LocationTrackingService : Service(), MethodCallHandler {
     companion object {
@@ -99,7 +100,24 @@ class LocationTrackingService : Service(), MethodCallHandler {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createNotification())
+        // Extract username from Intent
+        intent?.getStringExtra("username")?.let {
+            if (it.isNotEmpty()) {
+                startTracking(it)
+            }
+        }
+
+        // Handle foreground service start properly for different Android versions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, 
+                createNotification(), 
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
+
         return START_STICKY // Restart service if killed
     }
 
@@ -113,7 +131,7 @@ class LocationTrackingService : Service(), MethodCallHandler {
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Driver Tracking Active")
-            .setContentText("Updating location...")
+            .setContentText("Updating location for $username...")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -126,14 +144,17 @@ class LocationTrackingService : Service(), MethodCallHandler {
             isTracking = true
             wakeLock?.acquire(TimeUnit.MINUTES.toMillis(30)) // Acquire for 30 minutes, will be renewed
             
-            // Request location updates
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                locationCallback,
-                Looper.getMainLooper()
-            )
-            
-            Log.d(TAG, "Location tracking started for $username")
+            try {
+                // Request location updates
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    Looper.getMainLooper()
+                )
+                Log.d(TAG, "Location tracking started for $username")
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Location permission missing: ${e.message}")
+            }
         }
     }
 
@@ -147,6 +168,8 @@ class LocationTrackingService : Service(), MethodCallHandler {
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
+        // This won't be called directly since we're starting it as a Service, 
+        // but keeping it if we switch architecture later
         when (call.method) {
             "startTracking" -> {
                 val username = call.argument<String>("username") ?: ""
@@ -163,29 +186,6 @@ class LocationTrackingService : Service(), MethodCallHandler {
             }
             "isTracking" -> {
                 result.success(isTracking)
-            }
-            "updateUsername" -> {
-                this.username = call.argument<String>("username") ?: ""
-                result.success("Username updated to ${this.username}")
-            }
-            "getLastLocation" -> {
-                val lat = sharedPreferences.getString(LAST_LOCATION_LAT, null)
-                val lng = sharedPreferences.getString(LAST_LOCATION_LNG, null)
-                val lastUsername = sharedPreferences.getString(LAST_USERNAME, null)
-                
-                if (lat != null && lng != null && lastUsername != null) {
-                    val locationMap = mapOf(
-                        "lat" to lat.toDouble(),
-                        "lng" to lng.toDouble(),
-                        "username" to lastUsername,
-                        "updated" to sharedPreferences.getBoolean(LOCATION_UPDATED, false)
-                    )
-                    result.success(locationMap)
-                    // Reset the updated flag
-                    sharedPreferences.edit().putBoolean(LOCATION_UPDATED, false).apply()
-                } else {
-                    result.success(null)
-                }
             }
             else -> {
                 result.notImplemented()
