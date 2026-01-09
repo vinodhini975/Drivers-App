@@ -18,7 +18,7 @@ android {
     defaultConfig {
         applicationId = "com.example.driver_app"
         minSdk = flutter.minSdkVersion
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
 
@@ -36,26 +36,26 @@ android {
     }
 
     buildTypes {
-    release {
-        // Use release signing config from debug for testing
-        signingConfig = signingConfigs.getByName("debug")
+        release {
+            // Use release signing config from debug for testing
+            signingConfig = signingConfigs.getByName("debug")
 
-        // Enable code shrinking and obfuscation
-        isMinifyEnabled = true
-        isShrinkResources = true
+            // Enable code shrinking and obfuscation
+            isMinifyEnabled = false 
+            isShrinkResources = false 
 
-        proguardFiles(
-            getDefaultProguardFile("proguard-android-optimize.txt"),
-            "proguard-rules.pro"
-        )
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+
+        debug {
+            // Disable shrinking for debug build
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
-
-    debug {
-        // Disable shrinking for debug build
-        isMinifyEnabled = false
-        isShrinkResources = false
-    }
-}
 }
 
 flutter {

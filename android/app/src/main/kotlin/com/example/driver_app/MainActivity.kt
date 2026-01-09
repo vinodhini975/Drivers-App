@@ -9,12 +9,14 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "location_tracking_service"
     private var locationUpdateHandler: Handler? = null
     private var locationUpdateRunnable: Runnable? = null
     private lateinit var sharedPreferences: SharedPreferences
+    private var eventSink: EventChannel.EventSink? = null
     
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -33,8 +35,11 @@ class MainActivity : FlutterActivity() {
                     result.success("Service stopped")
                 }
                 "isTracking" -> {
-                    // We would need to implement a way to check if the service is running
-                    result.success(false) // Placeholder
+                    // Check if the service is running by checking SharedPreferences
+                    val lastUsername = sharedPreferences.getString("last_username", null)
+                    val isRunning = lastUsername != null && lastUsername.isNotEmpty()
+                    android.util.Log.d("MainActivity", "isTracking called: $isRunning (username=$lastUsername)")
+                    result.success(isRunning)
                 }
                 "getLastLocation" -> {
                     // This method will be called by Flutter to get the latest location
@@ -43,23 +48,45 @@ class MainActivity : FlutterActivity() {
                     val lastUsername = sharedPreferences.getString("last_username", null)
                     val updated = sharedPreferences.getBoolean("location_updated", false)
                     
-                    if (lat != null && lng != null && lastUsername != null) {
-                        val locationMap = mapOf(
-                            "lat" to lat.toDouble(),
-                            "lng" to lng.toDouble(),
-                            "username" to lastUsername,
-                            "updated" to updated
-                        )
-                        result.success(locationMap)
-                        // Reset the updated flag
-                        sharedPreferences.edit().putBoolean("location_updated", false).apply()
+                    android.util.Log.d("MainActivity", "getLastLocation called: lat=$lat, lng=$lng, username=$lastUsername, updated=$updated")
+                    
+                    if (lat != null && lng != null && lastUsername != null && updated) {
+                        try {
+                            val locationMap = mapOf(
+                                "lat" to lat.toDouble(),
+                                "lng" to lng.toDouble(),
+                                "username" to lastUsername,
+                                "updated" to true
+                            )
+                            result.success(locationMap)
+                            // Reset the updated flag after successful retrieval
+                            sharedPreferences.edit().putBoolean("location_updated", false).apply()
+                            android.util.Log.d("MainActivity", "Location data sent to Flutter: $locationMap")
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Error parsing location data: ${e.message}")
+                            result.success(null)
+                        }
                     } else {
+                        android.util.Log.d("MainActivity", "No valid location data available or not updated")
                         result.success(null)
                     }
                 }
                 else -> result.notImplemented()
             }
         }
+        
+        // Create event channel for real-time location updates
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "$CHANNEL/events").setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    eventSink = events
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    eventSink = null
+                }
+            }
+        )
         
         // Start periodic checking for location updates from the native service
         startLocationUpdateListener()
@@ -71,14 +98,23 @@ class MainActivity : FlutterActivity() {
             override fun run() {
                 // Check if location was updated
                 if (sharedPreferences.getBoolean("location_updated", false)) {
-                    // Location was updated, send to Flutter
+                    // Location was updated, send to Flutter via event channel
                     val lat = sharedPreferences.getString("last_location_lat", null)
                     val lng = sharedPreferences.getString("last_location_lng", null)
                     val username = sharedPreferences.getString("last_username", null)
                     
                     if (lat != null && lng != null && username != null) {
-                        // Send location update to Flutter - this would require an event channel
-                        // For now, we'll just log it
+                        val locationMap = mapOf(
+                            "lat" to lat.toDouble(),
+                            "lng" to lng.toDouble(),
+                            "username" to username
+                        )
+                        
+                        eventSink?.success(locationMap)
+                        android.util.Log.d("MainActivity", "Location update sent to Flutter: $locationMap")
+                        
+                        // Reset the updated flag after sending
+                        sharedPreferences.edit().putBoolean("location_updated", false).apply()
                     }
                 }
                 
@@ -94,6 +130,7 @@ class MainActivity : FlutterActivity() {
         locationUpdateRunnable?.let {
             locationUpdateHandler?.removeCallbacks(it)
         }
+        eventSink = null
     }
     
     private fun startLocationTrackingService(username: String?) {
@@ -106,7 +143,18 @@ class MainActivity : FlutterActivity() {
     }
     
     private fun stopLocationTrackingService() {
+        android.util.Log.d("MainActivity", "Stopping location tracking service")
         val intent = Intent(this, LocationTrackingService::class.java)
         stopService(intent)
+        
+        // Clear the tracking data from SharedPreferences
+        sharedPreferences.edit().apply {
+            remove("last_username")
+            remove("last_location_lat")
+            remove("last_location_lng")
+            remove("location_updated")
+            apply()
+        }
+        android.util.Log.d("MainActivity", "Location tracking service stopped and prefs cleared")
     }
 }

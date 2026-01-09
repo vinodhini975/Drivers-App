@@ -1,77 +1,49 @@
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 class NativeLocationService {
   static const MethodChannel _channel = MethodChannel('location_tracking_service');
+  static const EventChannel _eventChannel = EventChannel('location_tracking_service/events');
 
-  /// Starts the native location tracking service
-  static Future<String?> startTracking(String username) async {
+  static Future<String?> startTracking(String driverId) async {
     try {
       final result = await _channel.invokeMethod('startTracking', {
-        'username': username,
+        'username': driverId,
       });
-      print('📍 NativeLocationService: Tracking started for $username');
       return result;
     } on PlatformException catch (e) {
-      print('Error starting tracking: ${e.message}');
+      debugPrint('Error starting tracking: ${e.message}');
       return null;
     }
   }
 
-  /// Stops the native location tracking service
   static Future<String?> stopTracking() async {
     try {
       final result = await _channel.invokeMethod('stopTracking');
-      print('📍 NativeLocationService: Tracking stopped');
       return result;
     } on PlatformException catch (e) {
-      print('Error stopping tracking: ${e.message}');
+      debugPrint('Error stopping tracking: ${e.message}');
       return null;
     }
   }
 
-  /// Checks if tracking is currently active
   static Future<bool> isTracking() async {
     try {
       final result = await _channel.invokeMethod('isTracking');
       return result ?? false;
     } on PlatformException catch (e) {
-      print('Error checking tracking status: ${e.message}');
       return false;
     }
   }
-  
-  /// Gets the last location from the native service
-  static Future<Map<String, dynamic>?> getLastLocation() async {
-    try {
-      final result = await _channel.invokeMethod('getLastLocation');
-      return result;
-    } on PlatformException catch (e) {
-      print('Error getting last location: ${e.message}');
+
+  static Stream<Map<String, dynamic>?> getLocationUpdates() {
+    return _eventChannel.receiveBroadcastStream().map((dynamic event) {
+      if (event == null) return null;
+      // SAFE CONVERSION: Converts the internal _Map<Object?, Object?> to Map<String, dynamic>
+      return Map<String, dynamic>.from(event as Map);
+    }).handleError((error) {
+      debugPrint('Error receiving location updates: $error');
       return null;
-    }
-  }
-  
-  /// Updates location in Firestore - this will be called from the Flutter side
-  /// when location updates are received from the native service
-  static Future<void> updateLocation(String username, double lat, double lng) async {
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('drivers')
-          .doc(username);
-
-      await docRef.set({
-        'name': username,
-        'lat': lat,
-        'lng': lng,
-        'isActive': true,
-        'lastUpdated': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      print("📍 Native location updated for $username: $lat, $lng");
-    } catch (e) {
-      print("❌ Error updating location in Firestore: $e");
-    }
+    });
   }
 }

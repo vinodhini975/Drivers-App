@@ -1,613 +1,321 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-
-import '../services/location_service.dart';
-import '../services/native_location_service.dart';
-import '../services/location_polling_service.dart';
+import 'dart:async';
+import '../models/driver_model.dart';
+import '../services/auth_service.dart';
+import '../services/duty_service.dart';
+import '../services/enhanced_location_service.dart';
 import '../services/permission_helper.dart';
-
-import 'driver_profile_screen.dart';
 import 'login_screen.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class HomeScreen extends StatefulWidget {
-  final String username;
-  const HomeScreen({super.key, required this.username});
+  final DriverModel driver;
+  const HomeScreen({super.key, required this.driver});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  bool trackingStarted = false;
-  bool _isLoading = true;
-  bool _isTrackingStatus = false;
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+  final AuthService _authService = AuthService();
+  final DutyService _dutyService = DutyService();
+  final EnhancedLocationService _locationService = EnhancedLocationService();
+  
+  Timer? _locationTimer;
+  Timer? _dutyTimer;
+  StreamSubscription? _batterySubscription;
+  StreamSubscription? _connectivitySubscription;
+  
+  bool _isDutyActive = false;
+  bool _isLoading = false;
+  int _dutyDurationMinutes = 0;
+  int _batteryLevel = 100;
+  bool _isBatteryLow = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeScreen();
+    WidgetsBinding.instance.addObserver(this);
+    _initialize();
   }
 
-  Future<void> _initializeScreen() async {
-    try {
-      await _loadTrackingState();
-      
-      // Check if tracking was previously enabled and permissions are granted
-      if (trackingStarted) {
-        final locationPermission = await Permission.location.status;
-        final locationAlwaysPermission = await Permission.locationAlways.status;
-        
-        if (locationPermission.isGranted && locationAlwaysPermission.isGranted) {
-          // Start polling service if tracking was previously enabled
-          LocationPollingService.startPolling(widget.username);
-          setState(() {
-            _isTrackingStatus = true;
-          });
-        } else {
-          // Reset tracking state if permissions are not granted
-          await _setTrackingState(false);
-          setState(() {
-            _isTrackingStatus = false;
-          });
-        }
-      }
-    } catch (e) {
-      print('Error initializing screen: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _locationTimer?.cancel();
+    _dutyTimer?.cancel();
+    _batterySubscription?.cancel();
+    _connectivitySubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initialize() async {
+    await _checkDutyStatus();
+    await _checkBatteryStatus();
+    _startBatteryMonitoring();
+    _startConnectivityMonitoring();
+    
+    if (_isDutyActive) {
+      await _startTracking();
     }
   }
 
-  Future<void> _loadTrackingState() async {
-    final prefs = await SharedPreferences.getInstance();
-    trackingStarted = prefs.getBool("tracking_running") ?? false;
+  Future<void> _startTracking() async {
+    _locationTimer?.cancel();
+    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+      if (await _locationService.shouldContinueTracking()) {
+        await _locationService.captureLocation(widget.driver.driverId);
+      } else {
+        timer.cancel();
+      }
+    });
   }
 
-  Future<void> _setTrackingState(bool state) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool("tracking_running", state);
-    trackingStarted = state;
-    if (!mounted) return;
-    setState(() {});
+  Future<void> _checkDutyStatus() async {
+    final active = await _dutyService.isDutyActive();
+    setState(() => _isDutyActive = active);
+    if (active) _startDutyTimer();
   }
 
-  Future<void> _requestPermissions() async {
+  Future<void> _checkBatteryStatus() async {
+    final status = await _dutyService.checkBatteryStatus();
+    setState(() { _batteryLevel = status['level']; _isBatteryLow = status['isLow']; });
+  }
+
+  void _startBatteryMonitoring() {
+    _batterySubscription = _dutyService.batteryLevelStream.listen((level) {
+      setState(() { _batteryLevel = level; _isBatteryLow = level < 20; });
+    });
+  }
+
+  void _startConnectivityMonitoring() {
+    _connectivitySubscription = _locationService.connectivityStream.listen((result) {
+      if (result != ConnectivityResult.none) {
+        _locationService.syncOfflineLocations();
+      }
+    });
+  }
+
+  void _startDutyTimer() {
+    _dutyTimer?.cancel();
+    _dutyTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+      final duration = await _dutyService.getCurrentDutyDuration();
+      if (mounted) setState(() => _dutyDurationMinutes = duration);
+    });
+  }
+
+  Future<void> _startDuty() async {
     final granted = await PermissionHelper.requestLocationPermissionWithDialog(context);
-    if (granted) {
-      print("All location permissions granted");
-    } else {
-      print("Location permissions not granted");
+    if (!granted) return;
+    setState(() => _isLoading = true);
+    final result = await _dutyService.startDuty(widget.driver.driverId);
+    if (result['success']) {
+      setState(() => _isDutyActive = true);
+      _startDutyTimer();
+      await _startTracking();
     }
+    setState(() => _isLoading = false);
+  }
+
+  Future<void> _endDuty() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End Duty'),
+        content: const Text('Are you sure you want to end your duty and stop location tracking?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('End Duty', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isLoading = true);
+    _locationTimer?.cancel();
+    await _dutyService.endDuty(widget.driver.driverId);
+    setState(() { _isDutyActive = false; _dutyDurationMinutes = 0; });
+    _dutyTimer?.cancel();
+    setState(() => _isLoading = false);
   }
 
   Future<void> _logout() async {
-    try {
-      // Sign out from Firebase
-      await FirebaseAuth.instance.signOut();
-      
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove("driver_username");
-      await _setTrackingState(false);
-
-      // Stop native tracking service
-      await NativeLocationService.stopTracking();
-      LocationPollingService.stopPolling();
-
-      if (!mounted) return;
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-      );
-    } catch (e) {
-      print("Error during logout: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Logout failed. Please try again.")),
-        );
-      }
+    if (_isDutyActive) {
+      _showMessage('Please end duty before logging out', isError: true);
+      return;
     }
+    await _authService.signOut();
+    if (!mounted) return;
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+  }
+
+  void _showMessage(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: isError ? Colors.red : Colors.green),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return Scaffold(
-        appBar: AppBar(
-          title: Text("Driver Dashboard - ${widget.username}"),
-          backgroundColor: Colors.green[700],
-          foregroundColor: Colors.white,
-        ),
-        body: const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 20),
-              Text('Initializing...'),
-            ],
-          ),
-        ),
-      );
-    }
-
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: Text("Driver Dashboard - ${widget.username}", 
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 18,
-          ),
-        ),
+        title: const Text('Driver Dashboard', style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.green[700],
         foregroundColor: Colors.white,
-        elevation: 4,
+        elevation: 0,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.person),
-            tooltip: "Edit Profile",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      ProfileScreen(username: widget.username),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            icon: Icon(Icons.logout),
-            tooltip: "Logout",
-            onPressed: _logout,
-          ),
+          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Welcome Card
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.green[50],
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.grey.withOpacity(0.2),
-                      spreadRadius: 1,
-                      blurRadius: 5,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.green[100],
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.person,
-                            color: Colors.green,
-                            size: 28,
-                          ),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            // Professional Profile Header
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(24, 10, 24, 30),
+              decoration: BoxDecoration(
+                color: Colors.green[700],
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(35)),
+                boxShadow: [BoxShadow(color: Colors.green.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))],
+              ),
+              child: Column(
+                children: [
+                  const CircleAvatar(
+                    radius: 45,
+                    backgroundColor: Colors.white,
+                    child: Icon(Icons.person, size: 60, color: Colors.green),
+                  ),
+                  const SizedBox(height: 15),
+                  Text(widget.driver.name, 
+                       style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(20)),
+                    child: Text('ID: ${widget.driver.driverId}', style: const TextStyle(color: Colors.white, fontSize: 14)),
+                  ),
+                  const SizedBox(height: 25),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildHeaderStat(Icons.battery_3_bar, '$_batteryLevel%', 'Battery', _isBatteryLow ? Colors.red[200]! : Colors.white),
+                      _buildHeaderStat(Icons.access_time_filled, '${_dutyDurationMinutes}m', 'Duty Time', Colors.white),
+                      _buildHeaderStat(Icons.local_shipping, widget.driver.vehicleId, 'Vehicle', Colors.white),
+                    ],
+                  )
+                ],
+              ),
+            ),
+
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Prominent Duty Status Control
+                  Card(
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                    elevation: 5,
+                    shadowColor: Colors.black26,
+                    child: Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(25),
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: _isDutyActive 
+                            ? [Colors.white, Colors.green[50]!] 
+                            : [Colors.white, Colors.red[50]!],
                         ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(
-                                "Welcome, ${widget.username}",
-                                style: const TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green,
-                                ),
+                              Icon(
+                                _isDutyActive ? Icons.online_prediction : Icons.offline_bolt,
+                                color: _isDutyActive ? Colors.green : Colors.red,
                               ),
-                              const SizedBox(height: 4),
+                              const SizedBox(width: 10),
                               Text(
-                                "Ready to start tracking",
+                                _isDutyActive ? 'LOCATION TRACKING ON' : 'LOCATION TRACKING OFF',
                                 style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.grey[600],
+                                  fontSize: 16, 
+                                  fontWeight: FontWeight.w800, 
+                                  color: _isDutyActive ? Colors.green[800] : Colors.red[800],
+                                  letterSpacing: 1.0,
                                 ),
                               ),
                             ],
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      "Ensure location services are enabled to maintain accurate tracking.",
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey[700],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // Tracking Status Card
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: _isTrackingStatus ? Colors.green[50] : Colors.grey[50],
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: _isTrackingStatus ? Colors.green : Colors.grey,
-                    width: 1.5,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: _isTrackingStatus ? Colors.green[100] : Colors.grey[200],
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.location_on,
-                        color: _isTrackingStatus ? Colors.green : Colors.grey,
-                        size: 24,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            "Tracking Status",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: _isTrackingStatus ? Colors.green[800] : Colors.grey[700],
-                            ),
-                          ),
-                          Text(
-                            _isTrackingStatus ? "Active - Location tracking enabled" : "Inactive - Location tracking disabled",
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: _isTrackingStatus ? Colors.green[600] : Colors.grey[600],
-                            ),
+                          const SizedBox(height: 20),
+                          ElevatedButton(
+                            onPressed: _isLoading ? null : (_isDutyActive ? _endDuty : _startDuty),
+                            style: ElevatedButton.styleFrom(
+                              minimumSize: const Size(double.infinity, 70),
+                              backgroundColor: _isDutyActive ? Colors.red : Colors.green,
+                              elevation: 4,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+                            child: _isLoading 
+                              ? const CircularProgressIndicator(color: Colors.white)
+                              : Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(_isDutyActive ? Icons.stop_circle : Icons.play_circle, color: Colors.white, size: 28),
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      _isDutyActive ? 'END MY DUTY' : 'START MY DUTY',
+                                      style: const TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ),
                           ),
                         ],
                       ),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: _isTrackingStatus ? Colors.green : Colors.grey,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        _isTrackingStatus ? "ON" : "OFF",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                      ),
+                  ),
+
+                  const SizedBox(height: 30),
+                  
+                  // Assignment Information
+                  _buildSectionTitle('Route Information'),
+                  Container(
+                    margin: const EdgeInsets.only(top: 12, bottom: 25),
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.white, 
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.grey[200]!),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // Action Buttons
-              const Text(
-                "Quick Actions",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              // Grid of action buttons
-              GridView.count(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                children: [
-                  _buildActionCard(
-                    icon: Icons.play_arrow,
-                    title: "Start Tracking",
-                    subtitle: "Begin location tracking",
-                    color: _isTrackingStatus ? Colors.grey : Colors.green,
-                    onPressed: () async {
-                      if (!_isTrackingStatus) {
-                        // Request permissions before starting tracking
-                        await _requestPermissions();
-                        
-                        // Check if permissions are granted before starting service
-                        final locationPermission = await Permission.location.status;
-                        final locationAlwaysPermission = await Permission.locationAlways.status;
-                        
-                        if (locationPermission.isGranted && locationAlwaysPermission.isGranted) {
-                          // Use native service instead of Flutter background service
-                          final result = await NativeLocationService.startTracking(widget.username);
-                          
-                          if (result != null) {
-                            await _setTrackingState(true);
-                            
-                            // Start polling for location updates from native service
-                            LocationPollingService.startPolling(widget.username);
-                            
-                            setState(() {
-                              _isTrackingStatus = true;
-                            });
-
-                            if (!mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("Tracking started")),
-                            );
-                          } else {
-                            if (!mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("Failed to start tracking")),
-                            );
-                          }
-                        } else {
-                          if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Location permissions are required for tracking")),
-                          );
-                        }
-                      } else {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Tracking already running")),
-                        );
-                      }
-                    },
-                  ),
-                  _buildActionCard(
-                    icon: Icons.stop,
-                    title: "Stop Tracking",
-                    subtitle: "End location tracking",
-                    color: Colors.red,
-                    onPressed: () async {
-                      // Stop native tracking service
-                      await NativeLocationService.stopTracking();
-                      LocationPollingService.stopPolling();
-                      await _setTrackingState(false);
-                      
-                      setState(() {
-                        _isTrackingStatus = false;
-                      });
-
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Tracking stopped")),
-                      );
-                    },
-                  ),
-                  _buildActionCard(
-                    icon: Icons.my_location,
-                    title: "Send Location",
-                    subtitle: "Update current location",
-                    color: Colors.blue,
-                    onPressed: () async {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text("Getting location..."),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-
-                      try {
-                        bool success = await LocationService.sendCurrentLocation(widget.username);
-                        if (!mounted) return;
-                        
-                        if (success) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("Location updated successfully")),
-                          );
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Failed to update location. Check GPS/Internet."),
-                              backgroundColor: Colors.red,
-                            ),
-                          );
-                        }
-                      } catch (e) {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("Error: $e"),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                  _buildActionCard(
-                    icon: Icons.schedule,
-                    title: "Schedule",
-                    subtitle: "View today's schedule",
-                    color: Colors.orange,
-                    onPressed: () {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Today's schedule coming soon")),
-                      );
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-
-              // Info Cards
-              const Text(
-                "Information",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildInfoCard(
-                      icon: Icons.battery_charging_full,
-                      title: "Battery",
-                      value: "Optimized",
-                      color: Colors.blue,
+                    child: Row(
+                      children: [
+                        _buildAssignmentInfo('ZONE', widget.driver.zone, Icons.location_city),
+                        Container(height: 40, width: 1, color: Colors.grey[200]),
+                        _buildAssignmentInfo('WARD', widget.driver.ward, Icons.map),
+                      ],
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildInfoCard(
-                      icon: Icons.location_on,
-                      title: "Accuracy",
-                      value: "High",
-                      color: Colors.green,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildActionCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback onPressed,
-  }) {
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  icon,
-                  color: color,
-                  size: 28,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey[800],
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInfoCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required Color color,
-  }) {
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(
-                icon,
-                color: color,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.grey[700],
-                    ),
-                  ),
-                  Text(
-                    value,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: color,
-                    ),
-                  ),
+                  
+                  // Reminders Section
+                  _buildSectionTitle('Safety Check-list'),
+                  const SizedBox(height: 12),
+                  _buildReminderCard([
+                    _ReminderItem(Icons.gps_fixed, 'Keep GPS enabled at all times'),
+                    _ReminderItem(Icons.battery_alert, 'Charge phone if below 20%'),
+                    _ReminderItem(Icons.wifi, 'Stable internet for live tracking'),
+                    _ReminderItem(Icons.shield, 'Drive safely & follow traffic rules'),
+                  ]),
+                  
+                  const SizedBox(height: 30),
                 ],
               ),
             ),
@@ -617,12 +325,61 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    super.dispose();
-    // Ensure services are stopped when the screen is disposed
-    if (!trackingStarted) {
-      LocationPollingService.stopPolling();
-    }
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey[800]),
+    );
   }
+
+  Widget _buildHeaderStat(IconData icon, String value, String label, Color color) {
+    return Column(
+      children: [
+        Icon(icon, color: color, size: 28),
+        const SizedBox(height: 4),
+        Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
+        Text(label, style: TextStyle(color: color.withOpacity(0.8), fontSize: 12, fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
+
+  Widget _buildAssignmentInfo(String label, String value, IconData icon) {
+    return Expanded(
+      child: Column(
+        children: [
+          Icon(icon, color: Colors.green[600], size: 24),
+          const SizedBox(height: 8),
+          Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+          const SizedBox(height: 2),
+          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReminderCard(List<_ReminderItem> items) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Column(
+          children: items.map((item) => ListTile(
+            leading: CircleAvatar(
+              backgroundColor: Colors.green[50],
+              child: Icon(item.icon, color: Colors.green[700], size: 20),
+            ),
+            title: Text(item.text, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+            dense: true,
+          )).toList(),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReminderItem {
+  final IconData icon;
+  final String text;
+  _ReminderItem(this.icon, this.text);
 }
