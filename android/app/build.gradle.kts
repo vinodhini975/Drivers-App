@@ -69,6 +69,9 @@ dependencies {
     // Firebase Analytics (correct artifact name)
     implementation("com.google.firebase:firebase-analytics-ktx")
 
+    // ADDED: Firestore dependency for native tracking service
+    implementation("com.google.firebase:firebase-firestore-ktx")
+
     // Required for multidex support
     implementation("androidx.multidex:multidex:2.0.1")
     

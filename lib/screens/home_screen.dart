@@ -5,6 +5,7 @@ import '../services/auth_service.dart';
 import '../services/duty_service.dart';
 import '../services/enhanced_location_service.dart';
 import '../services/permission_helper.dart';
+import '../services/native_location_service.dart';
 import 'login_screen.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
@@ -31,6 +32,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _dutyDurationMinutes = 0;
   int _batteryLevel = 100;
   bool _isBatteryLow = false;
+  
+  bool _backgroundServiceStarted = false; // Track service state
 
   @override
   void initState() {
@@ -55,15 +58,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _startBatteryMonitoring();
     _startConnectivityMonitoring();
     
-    if (_isDutyActive) {
+    if (_isDutyActive && !_backgroundServiceStarted) {
+      await _startBackgroundService();
       await _startTracking();
     }
   }
 
   Future<void> _startTracking() async {
     _locationTimer?.cancel();
-    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
-      if (await _locationService.shouldContinueTracking()) {
+    // Reduce frequency since Android service handles primary tracking
+    _locationTimer = Timer.periodic(const Duration(minutes: 5), (timer) async {
+      // Check if duty is active
+      final isDutyActive = await _dutyService.isDutyActive();
+      if (isDutyActive) {
         await _locationService.captureLocation(widget.driver.driverId);
       } else {
         timer.cancel();
@@ -103,15 +110,35 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (mounted) setState(() => _dutyDurationMinutes = duration);
     });
   }
+  
+  Future<void> _startBackgroundService() async {
+    if (_backgroundServiceStarted) {
+      return; // Service already started
+    }
+    
+    try {
+      await NativeLocationService.startTracking(widget.driver.driverId);
+      _backgroundServiceStarted = true;
+      debugPrint('Background location service started for driver: ${widget.driver.driverId}');
+    } catch (e) {
+      debugPrint('Failed to start background service: $e');
+    }
+  }
 
   Future<void> _startDuty() async {
-    final granted = await PermissionHelper.requestLocationPermissionWithDialog(context);
-    if (!granted) return;
+    final ready = await PermissionHelper.ensureLocationRequirement(context);
+    if (!ready) return;
+
     setState(() => _isLoading = true);
     final result = await _dutyService.startDuty(widget.driver.driverId);
     if (result['success']) {
       setState(() => _isDutyActive = true);
       _startDutyTimer();
+      
+      // Start background service if not already started
+      if (!_backgroundServiceStarted) {
+        await _startBackgroundService();
+      }
       await _startTracking();
     }
     setState(() => _isLoading = false);
@@ -139,6 +166,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() => _isLoading = true);
     _locationTimer?.cancel();
     await _dutyService.endDuty(widget.driver.driverId);
+    
+    // Stop background service
+    if (_backgroundServiceStarted) {
+      await NativeLocationService.stopTracking();
+      _backgroundServiceStarted = false;
+      debugPrint('Background location service stopped');
+    }
+    
     setState(() { _isDutyActive = false; _dutyDurationMinutes = 0; });
     _dutyTimer?.cancel();
     setState(() => _isLoading = false);
@@ -149,6 +184,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _showMessage('Please end duty before logging out', isError: true);
       return;
     }
+    
+    // Stop Android native service if running
+    if (_backgroundServiceStarted) {
+      await NativeLocationService.stopTracking();
+      _backgroundServiceStarted = false;
+      debugPrint('Background location service stopped on logout');
+    }
+    
     await _authService.signOut();
     if (!mounted) return;
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
@@ -177,14 +220,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Professional Profile Header
+            // Profile Header
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(24, 10, 24, 30),
               decoration: BoxDecoration(
                 color: Colors.green[700],
                 borderRadius: const BorderRadius.vertical(bottom: Radius.circular(35)),
-                boxShadow: [BoxShadow(color: Colors.green.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))],
+                boxShadow: [BoxShadow(color: Colors.green.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5))],
               ),
               child: Column(
                 children: [
@@ -219,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Prominent Duty Status Control
+                  // Duty Status Control
                   Card(
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
                     elevation: 5,
@@ -304,18 +347,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-                  
-                  // Reminders Section
-                  _buildSectionTitle('Safety Check-list'),
-                  const SizedBox(height: 12),
-                  _buildReminderCard([
-                    _ReminderItem(Icons.gps_fixed, 'Keep GPS enabled at all times'),
-                    _ReminderItem(Icons.battery_alert, 'Charge phone if below 20%'),
-                    _ReminderItem(Icons.wifi, 'Stable internet for live tracking'),
-                    _ReminderItem(Icons.shield, 'Drive safely & follow traffic rules'),
-                  ]),
-                  
-                  const SizedBox(height: 30),
                 ],
               ),
             ),
@@ -338,7 +369,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         Icon(icon, color: color, size: 28),
         const SizedBox(height: 4),
         Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
-        Text(label, style: TextStyle(color: color.withOpacity(0.8), fontSize: 12, fontWeight: FontWeight.w500)),
+        Text(label, style: TextStyle(color: color.withValues(alpha: 0.8), fontSize: 12, fontWeight: FontWeight.w500)),
       ],
     );
   }
@@ -356,30 +387,4 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
   }
-
-  Widget _buildReminderCard(List<_ReminderItem> items) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Column(
-          children: items.map((item) => ListTile(
-            leading: CircleAvatar(
-              backgroundColor: Colors.green[50],
-              child: Icon(item.icon, color: Colors.green[700], size: 20),
-            ),
-            title: Text(item.text, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-            dense: true,
-          )).toList(),
-        ),
-      ),
-    );
-  }
-}
-
-class _ReminderItem {
-  final IconData icon;
-  final String text;
-  _ReminderItem(this.icon, this.text);
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../models/driver_model.dart';
 import 'home_screen.dart';
+import 'gov_map_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,19 +14,24 @@ class LoginScreen extends StatefulWidget {
 class LoginScreenState extends State<LoginScreen> {
   final _driverIdController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _govPasswordController = TextEditingController();
   final _authService = AuthService();
   
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _isDriverRole = true; // Role toggle
+
+
 
   @override
   void dispose() {
     _driverIdController.dispose();
     _passwordController.dispose();
+    _govPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
+  Future<void> _loginDriver() async {
     final driverId = _driverIdController.text.trim();
     final password = _passwordController.text;
 
@@ -35,45 +41,30 @@ class LoginScreenState extends State<LoginScreen> {
     }
 
     setState(() => _isLoading = true);
-
     try {
-      final result = await _authService.signInWithDriverId(
-        driverId: driverId,
-        password: password,
-      );
-
+      final result = await _authService.signInWithDriverId(driverId: driverId, password: password);
       if (!mounted) return;
 
       if (result['success']) {
-        final driver = result['driver'] as DriverModel;
-        
-        // Navigate to home screen
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => HomeScreen(driver: driver),
-          ),
-        );
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => HomeScreen(driver: result['driver'] as DriverModel)));
       } else {
         _showMessage(result['message'], isError: true);
       }
     } catch (e) {
-      if (!mounted) return;
       _showMessage('Login failed: $e', isError: true);
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      setState(() => _isLoading = false);
     }
+  }
+
+  void _loginGovernment() {
+    // Navigate directly to map without password validation
+    Navigator.push(context, MaterialPageRoute(builder: (context) => const GovMapScreen()));
   }
 
   void _showMessage(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
-        duration: const Duration(seconds: 3),
-      ),
+      SnackBar(content: Text(message), backgroundColor: isError ? Colors.red : Colors.green),
     );
   }
 
@@ -86,129 +77,65 @@ class LoginScreenState extends State<LoginScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // App Logo
-                Icon(
-                  Icons.local_shipping,
-                  size: 80,
-                  color: Colors.green[700],
+                Icon(Icons.local_shipping, size: 80, color: _isDriverRole ? Colors.green[700] : Colors.blue[900]),
+                const SizedBox(height: 15),
+                Text('Vehicle Tracking', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: _isDriverRole ? Colors.green[700] : Colors.blue[900])),
+                const SizedBox(height: 30),
+
+                // Role Selector
+                ToggleButtons(
+                  isSelected: [_isDriverRole, !_isDriverRole],
+                  onPressed: (index) => setState(() => _isDriverRole = index == 0),
+                  borderRadius: BorderRadius.circular(12),
+                  selectedColor: Colors.white,
+                  fillColor: _isDriverRole ? Colors.green[700] : Colors.blue[900],
+                  children: const [
+                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Driver')),
+                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Government')),
+                  ],
                 ),
-                const SizedBox(height: 24),
-                
-                // App Title
-                Text(
-                  'Driver Tracking',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green[700],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Waste Collection Management',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                const SizedBox(height: 48),
-                
-                // Driver ID Field
-                TextField(
-                  controller: _driverIdController,
-                  decoration: InputDecoration(
-                    labelText: 'Driver ID',
-                    prefixIcon: const Icon(Icons.badge),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey[50],
-                  ),
-                  enabled: !_isLoading,
-                  textInputAction: TextInputAction.next,
-                ),
-                const SizedBox(height: 16),
-                
-                // Password Field
-                TextField(
-                  controller: _passwordController,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                    labelText: 'Password',
-                    prefixIcon: const Icon(Icons.lock),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword ? Icons.visibility : Icons.visibility_off,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey[50],
-                  ),
-                  enabled: !_isLoading,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => _login(),
-                ),
-                const SizedBox(height: 32),
-                
-                // Login Button
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _login,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green[700],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 2,
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : const Text(
-                          'Sign In',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                ),
-                const SizedBox(height: 24),
-                
-                // Info Text
-                Text(
-                  '🔒 Secure single-device authentication',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey[600],
-                  ),
-                ),
+                const SizedBox(height: 40),
+
+                if (_isDriverRole) ...[
+                  // DRIVER LOGIN UI
+                  _buildTextField(_driverIdController, 'Driver ID', Icons.badge),
+                  const SizedBox(height: 16),
+                  _buildTextField(_passwordController, 'Password', Icons.lock, isPassword: true),
+                  const SizedBox(height: 30),
+                  _buildButton('Driver Login', _loginDriver, Colors.green[700]!),
+                ] else ...[
+                  // GOVT LOGIN UI
+                  _buildTextField(_govPasswordController, 'Government Password', Icons.admin_panel_settings, isPassword: true),
+                  const SizedBox(height: 30),
+                  _buildButton('Government Login', _loginGovernment, Colors.blue[900]!),
+                ],
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isPassword = false}) {
+    return TextField(
+      controller: controller,
+      obscureText: isPassword && _obscurePassword,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+        suffixIcon: isPassword ? IconButton(icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off), onPressed: () => setState(() => _obscurePassword = !_obscurePassword)) : null,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildButton(String text, VoidCallback onPressed, Color color) {
+    return ElevatedButton(
+      onPressed: _isLoading ? null : onPressed,
+      style: ElevatedButton.styleFrom(backgroundColor: color, minimumSize: const Size(double.infinity, 60), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+      child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
     );
   }
 }

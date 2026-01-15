@@ -1,162 +1,97 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:geolocator/geolocator.dart';
 
 class PermissionHelper {
-  /// Shows a custom dialog to request location permissions
-  static Future<bool> requestLocationPermissionWithDialog(BuildContext context) async {
-    return await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const _LocationPermissionDialog(),
-    ) ?? false;
-  }
-}
+  /// Comprehensive check for Permissions + GPS Hardware Status
+  static Future<bool> ensureLocationRequirement(BuildContext context) async {
+    // 1. Check Permissions (Runtime)
+    bool hasPermissions = await _handlePermissions(context);
+    if (!hasPermissions) return false;
 
-class _LocationPermissionDialog extends StatefulWidget {
-  const _LocationPermissionDialog();
-
-  @override
-  State<_LocationPermissionDialog> createState() => _LocationPermissionDialogState();
-}
-
-class _LocationPermissionDialogState extends State<_LocationPermissionDialog> {
-  bool _isLoading = true;
-  String _status = 'Checking permissions...';
-
-  @override
-  void initState() {
-    super.initState();
-    _checkAndRequestPermissions();
+    // 2. Check GPS Hardware (Is it turned ON?)
+    bool isGpsOn = await _ensureGpsEnabled(context);
+    return isGpsOn;
   }
 
-  Future<void> _checkAndRequestPermissions() async {
-    try {
-      setState(() {
-        _status = 'Checking location permissions...';
-      });
+  static Future<bool> _handlePermissions(BuildContext context) async {
+    var status = await Permission.location.status;
+    
+    if (status.isDenied) {
+      status = await Permission.location.request();
+    }
 
-      // Check current location permission status
-      var locationStatus = await Permission.location.status;
-      
-      if (locationStatus.isGranted) {
-        // Check background location permission for Android 10+
-        final backgroundLocationStatus = await Permission.locationAlways.status;
-        
-        if (backgroundLocationStatus.isGranted) {
-          // Both permissions granted
-          if (mounted) {
-            Navigator.of(context).pop(true);
-          }
-          return;
-        } else {
-          setState(() {
-            _status = 'Requesting background location permission...';
-          });
+    if (status.isPermanentlyDenied) {
+      if (context.mounted) {
+        _showSettingsDialog(context, 'Location permission is permanently denied. Please enable it in app settings.');
+      }
+      return false;
+    }
 
-          // Request background location permission
-          final result = await Permission.locationAlways.request();
+    if (status.isGranted) {
+      // For Background Tracking (Android 10+)
+      var bgStatus = await Permission.locationAlways.status;
+      if (bgStatus.isDenied) {
+        bgStatus = await Permission.locationAlways.request();
+      }
+      return bgStatus.isGranted;
+    }
+
+    return status.isGranted;
+  }
+
+  static Future<bool> _ensureGpsEnabled(BuildContext context) async {
+    bool isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+    
+    if (!isServiceEnabled) {
+      // This will trigger the system dialog on Android if configured correctly,
+      // or we provide a clear prompt to the user.
+      if (context.mounted) {
+        bool userWantsToEnable = await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('GPS is Disabled'),
+            content: const Text('Location tracking requires GPS to be ON. Would you like to enable it now?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('NO')),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true), 
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                child: const Text('YES, ENABLE'),
+              ),
+            ],
+          ),
+        ) ?? false;
+
+        if (userWantsToEnable) {
+          // Open system location settings
+          await Geolocator.openLocationSettings();
           
-          if (result.isGranted) {
-            if (mounted) {
-              Navigator.of(context).pop(true);
-            }
-          } else {
-            // Handle denied permission
-            setState(() {
-              _isLoading = false;
-              _status = 'Permission required for tracking';
-            });
+          // Wait and check again (User comes back from settings)
+          int retries = 0;
+          while (retries < 5) {
+            await Future.delayed(const Duration(seconds: 2));
+            if (await Geolocator.isLocationServiceEnabled()) return true;
+            retries++;
           }
-        }
-      } else {
-        setState(() {
-          _status = 'Requesting location permission...';
-        });
-
-        // Request location permission
-        final result = await Permission.location.request();
-        
-        if (result.isGranted) {
-          // Now request background location permission
-          setState(() {
-            _status = 'Requesting background location permission...';
-          });
-
-          final backgroundResult = await Permission.locationAlways.request();
-          
-          if (backgroundResult.isGranted) {
-            if (mounted) {
-              Navigator.of(context).pop(true);
-            }
-          } else {
-            setState(() {
-              _isLoading = false;
-              _status = 'Background permission required for tracking';
-            });
-          }
-        } else {
-          setState(() {
-            _isLoading = false;
-            _status = 'Location permission required for tracking';
-          });
         }
       }
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _status = 'Error requesting permissions';
-      });
+      return false;
     }
+    return true;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Row(
-        children: [
-          Icon(Icons.location_on, color: Colors.green),
-          SizedBox(width: 8),
-          Text('Location Permission Required'),
+  static void _showSettingsDialog(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Permission Required'),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+          ElevatedButton(onPressed: () => openAppSettings(), child: const Text('OPEN SETTINGS')),
         ],
       ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _status,
-            style: const TextStyle(fontSize: 16),
-          ),
-          const SizedBox(height: 16),
-          if (_isLoading) ...[
-            const LinearProgressIndicator(),
-            const SizedBox(height: 8),
-            const Text(
-              'Please allow the requested permissions to enable location tracking.',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey,
-              ),
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        if (!_isLoading) ...[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: _checkAndRequestPermissions,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Retry'),
-          ),
-        ],
-      ],
     );
   }
 }
