@@ -1,12 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import '../services/permission_helper.dart';
+import '../services/auth_service.dart';
+import '../models/driver_model.dart';
 import 'home_screen.dart';
-import 'driver_profile_screen.dart';
+import 'gov_map_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,445 +12,130 @@ class LoginScreen extends StatefulWidget {
 }
 
 class LoginScreenState extends State<LoginScreen> {
-  final _usernameController = TextEditingController();
+  final _driverIdController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _emailController = TextEditingController();
-  
-  // Toggle between username/password and email/password
-  bool _useEmailAuth = true;
+  final _govPasswordController = TextEditingController();
+  final _authService = AuthService();
   
   bool _isLoading = false;
-  bool _isSignUp = false;
+  bool _obscurePassword = true;
+  bool _isDriverRole = true; // Role toggle
+
+
 
   @override
   void dispose() {
-    _usernameController.dispose();
+    _driverIdController.dispose();
     _passwordController.dispose();
-    _emailController.dispose();
+    _govPasswordController.dispose();
     super.dispose();
   }
 
-  void _showErrorDialog(String title, String message) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title, style: const TextStyle(color: Colors.red)),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          ),
-        ],
-      ),
+  Future<void> _loginDriver() async {
+    final driverId = _driverIdController.text.trim();
+    final password = _passwordController.text;
+
+    if (driverId.isEmpty || password.isEmpty) {
+      _showMessage('Please enter Driver ID and password', isError: true);
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final result = await _authService.signInWithDriverId(driverId: driverId, password: password);
+      if (!mounted) return;
+
+      if (result['success']) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => HomeScreen(driver: result['driver'] as DriverModel)));
+      } else {
+        _showMessage(result['message'], isError: true);
+      }
+    } catch (e) {
+      _showMessage('Login failed: $e', isError: true);
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _loginGovernment() {
+    // Navigate directly to map without password validation
+    Navigator.push(context, MaterialPageRoute(builder: (context) => const GovMapScreen()));
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: isError ? Colors.red : Colors.green),
     );
-  }
-
-  Future<void> _authenticateUser() async {
-    if (_useEmailAuth) {
-      if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Please enter email and password")),
-        );
-        return;
-      }
-    } else {
-      if (_usernameController.text.isEmpty || _passwordController.text.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Please enter username and password")),
-        );
-        return;
-      }
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      String email = _useEmailAuth 
-          ? _emailController.text.trim()
-          : "${_usernameController.text.trim()}@driverapp.com";
-          
-      UserCredential userCredential;
-      
-      if (_isSignUp) {
-        // Sign up with Firebase
-        userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: email,
-          password: _passwordController.text,
-        );
-      } else {
-        // Sign in with Firebase
-        userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: email,
-          password: _passwordController.text,
-        );
-      }
-
-      await _handleAuthSuccess(userCredential.user);
-
-    } on FirebaseAuthException catch (e) {
-      print("Firebase Auth Error: ${e.code} - ${e.message}");
-      if (e.message != null && e.message!.contains("API key not valid")) {
-        _showErrorDialog(
-          "Configuration Error", 
-          "The API key in google-services.json is invalid or restricted.\n\n"
-          "Possible solutions:\n"
-          "1. Download the latest google-services.json from Firebase Console.\n"
-          "2. Check API Key restrictions in Google Cloud Console.\n"
-          "3. Ensure the package name 'com.example.driver_app' matches exactly."
-        );
-      } else {
-        _handleAuthError(e);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Authentication error: $e")),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _signInWithGoogle() async {
-    setState(() => _isLoading = true);
-    
-    try {
-      // Trigger the authentication flow
-      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-      
-      if (googleUser == null) {
-        // The user canceled the sign-in
-        setState(() => _isLoading = false);
-        return;
-      }
-      
-      // Obtain the auth details from the request
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-      
-      // Create a new credential
-      final OAuthCredential credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-      
-      // Once signed in, return the UserCredential
-      final UserCredential userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
-      
-      await _handleAuthSuccess(userCredential.user);
-      
-    } on PlatformException catch (e) {
-      print("Google Sign In Platform Exception: ${e.code} - ${e.message} - ${e.details}");
-      
-      // Check for common configuration errors
-      if (e.code == 'sign_in_failed' || e.toString().contains("ApiException: 10")) {
-        _showErrorDialog(
-          "Google Sign In Setup Error",
-          "This error (Code 10) usually means the app is not properly configured in Firebase.\n\n"
-          "Please check:\n"
-          "1. SHA-1 Fingerprint: Ensure your debug keystore SHA-1 is added to Firebase Console.\n"
-          "2. google-services.json: Ensure it is in android/app/ and matches package 'com.example.driver_app'.\n"
-          "3. Support Email: Ensure a support email is set in Firebase Project Settings."
-        );
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Google Sign In failed: ${e.message}")),
-          );
-        }
-      }
-    } catch (e) {
-      print("Google Sign In Error: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Google Sign In failed: $e")),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _handleAuthSuccess(User? user) async {
-    if (user == null) return;
-    
-    // Determine username
-    String username;
-    if (_useEmailAuth) {
-      // Try to extract username from email or name
-      if (user.displayName != null && user.displayName!.isNotEmpty) {
-        username = user.displayName!;
-      } else {
-        username = user.email!.split('@')[0];
-      }
-    } else {
-      username = _usernameController.text.trim();
-    }
-    
-    // Save username locally
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("driver_username", username);
-
-    // Check if driver profile exists
-    final doc = await FirebaseFirestore.instance
-        .collection("drivers")
-        .doc(username) 
-        .get();
-
-    if (!mounted) return;
-    
-    if (doc.exists && (doc.data()?["profileCompleted"] == true)) {
-      // Profile exists -> go to home
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) =>
-              HomeScreen(username: username),
-        ),
-      );
-    } else {
-      // No profile -> go to profile screen
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) =>
-              ProfileScreen(username: username),
-        ),
-      );
-    }
-  }
-
-  void _handleAuthError(FirebaseAuthException e) {
-    String message = "Authentication failed";
-    if (e.code == 'weak-password') {
-      message = "Password is too weak";
-    } else if (e.code == 'email-already-in-use') {
-      message = "Account already exists";
-    } else if (e.code == 'user-not-found') {
-      message = "No account found";
-    } else if (e.code == 'wrong-password') {
-      message = "Incorrect password";
-    } else if (e.code == 'invalid-email') {
-      message = "Invalid email address";
-    } else {
-      message = e.message ?? "Authentication failed";
-    }
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_isSignUp ? "Create Account" : "Driver Login"),
-        backgroundColor: Colors.green[700],
-        foregroundColor: Colors.white,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 20),
-              const Icon(
-                Icons.drive_eta,
-                size: 80,
-                color: Colors.green,
-              ),
-              const SizedBox(height: 20),
-              Text(
-                _isSignUp ? "Create Your Account" : "Driver Tracking App",
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _isSignUp 
-                  ? "Enter your details to create an account" 
-                  : "Sign in to start tracking",
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Colors.grey[600],
-                ),
-              ),
-              const SizedBox(height: 30),
-              
-              // Auth Type Selector
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ChoiceChip(
-                    label: const Text('Email'),
-                    selected: _useEmailAuth,
-                    onSelected: (bool selected) {
-                      setState(() {
-                        _useEmailAuth = true;
-                      });
-                    },
-                    selectedColor: Colors.green[100],
-                    checkmarkColor: Colors.green,
-                  ),
-                  const SizedBox(width: 10),
-                  ChoiceChip(
-                    label: const Text('Username'),
-                    selected: !_useEmailAuth,
-                    onSelected: (bool selected) {
-                      setState(() {
-                        _useEmailAuth = false;
-                      });
-                    },
-                    selectedColor: Colors.green[100],
-                    checkmarkColor: Colors.green,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Icon(Icons.local_shipping, size: 80, color: _isDriverRole ? Colors.green[700] : Colors.blue[900]),
+                const SizedBox(height: 15),
+                Text('Vehicle Tracking', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: _isDriverRole ? Colors.green[700] : Colors.blue[900])),
+                const SizedBox(height: 30),
 
-              if (_useEmailAuth)
-                TextField(
-                  controller: _emailController,
-                  decoration: InputDecoration(
-                    labelText: "Email",
-                    prefixIcon: const Icon(Icons.email),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey[50],
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                  enabled: !_isLoading,
-                )
-              else
-                TextField(
-                  controller: _usernameController,
-                  decoration: InputDecoration(
-                    labelText: "Username",
-                    prefixIcon: const Icon(Icons.person),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey[50],
-                  ),
-                  enabled: !_isLoading,
-                ),
-              
-              const SizedBox(height: 20),
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: "Password",
-                  prefixIcon: const Icon(Icons.lock),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[50],
-                ),
-                enabled: !_isLoading,
-              ),
-              const SizedBox(height: 30),
-              
-              if (_isLoading)
-                const Center(
-                  child: CircularProgressIndicator(),
-                )
-              else
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    ElevatedButton(
-                      onPressed: _authenticateUser,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 15),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: Text(
-                        _isSignUp ? "Create Account" : "Login",
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 15),
-                    
-                    // Google Sign In Button
-                    OutlinedButton.icon(
-                      onPressed: _signInWithGoogle,
-                      icon: const Icon(Icons.login, color: Colors.red),
-                      label: const Text("Sign in with Google"),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.black87,
-                        padding: const EdgeInsets.symmetric(vertical: 15),
-                        side: const BorderSide(color: Colors.grey),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
+                // Role Selector
+                ToggleButtons(
+                  isSelected: [_isDriverRole, !_isDriverRole],
+                  onPressed: (index) => setState(() => _isDriverRole = index == 0),
+                  borderRadius: BorderRadius.circular(12),
+                  selectedColor: Colors.white,
+                  fillColor: _isDriverRole ? Colors.green[700] : Colors.blue[900],
+                  children: const [
+                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Driver')),
+                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Government')),
                   ],
                 ),
-              
-              const SizedBox(height: 20),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _isSignUp = !_isSignUp;
-                    _usernameController.clear();
-                    _passwordController.clear();
-                    _emailController.clear();
-                  });
-                },
-                child: Text(
-                  _isSignUp 
-                    ? "Already have an account? Sign In" 
-                    : "Don't have an account? Sign Up",
-                  style: const TextStyle(
-                    color: Colors.green,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextButton(
-                onPressed: () async {
-                  await PermissionHelper.requestLocationPermissionWithDialog(context);
-                },
-                child: const Text(
-                  "Grant Location Permissions",
-                  style: TextStyle(
-                    color: Colors.green,
-                    decoration: TextDecoration.underline,
-                  ),
-                ),
-              ),
-            ],
+                const SizedBox(height: 40),
+
+                if (_isDriverRole) ...[
+                  // DRIVER LOGIN UI
+                  _buildTextField(_driverIdController, 'Driver ID', Icons.badge),
+                  const SizedBox(height: 16),
+                  _buildTextField(_passwordController, 'Password', Icons.lock, isPassword: true),
+                  const SizedBox(height: 30),
+                  _buildButton('Driver Login', _loginDriver, Colors.green[700]!),
+                ] else ...[
+                  // GOVT LOGIN UI
+                  _buildTextField(_govPasswordController, 'Government Password', Icons.admin_panel_settings, isPassword: true),
+                  const SizedBox(height: 30),
+                  _buildButton('Government Login', _loginGovernment, Colors.blue[900]!),
+                ],
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isPassword = false}) {
+    return TextField(
+      controller: controller,
+      obscureText: isPassword && _obscurePassword,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+        suffixIcon: isPassword ? IconButton(icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off), onPressed: () => setState(() => _obscurePassword = !_obscurePassword)) : null,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildButton(String text, VoidCallback onPressed, Color color) {
+    return ElevatedButton(
+      onPressed: _isLoading ? null : onPressed,
+      style: ElevatedButton.styleFrom(backgroundColor: color, minimumSize: const Size(double.infinity, 60), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+      child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
     );
   }
 }

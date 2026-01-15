@@ -1,201 +1,121 @@
 package com.example.driver_app
 
 import android.app.*
-import android.content.Context
-import android.content.Intent
-import android.content.SharedPreferences
-import android.os.Build
-import android.os.IBinder
-import android.os.Looper
+import android.content.*
+import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.*
-import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugin.common.MethodChannel.MethodCallHandler
-import io.flutter.plugin.common.MethodChannel.Result
-import io.flutter.plugin.common.MethodCall
-import android.app.PendingIntent
-import android.os.PowerManager
-import java.util.concurrent.TimeUnit
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FieldValue
 import android.content.pm.ServiceInfo
 
-class LocationTrackingService : Service(), MethodCallHandler {
+class LocationTrackingService : Service() {
     companion object {
-        const val CHANNEL_ID = "location_tracking_service"
-        const val NOTIFICATION_ID = 1
-        const val NOTIFICATION_CHANNEL_ID = "LocationTrackingChannel"
-        const val REQUEST_CODE = 1001
-        private const val TAG = "LocationTrackingService"
-        private const val PREFS_NAME = "LocationTrackingPrefs"
-        private const val LAST_LOCATION_LAT = "last_location_lat"
-        private const val LAST_LOCATION_LNG = "last_location_lng"
-        private const val LAST_USERNAME = "last_username"
-        private const val LOCATION_UPDATED = "location_updated"
+        const val NOTIFICATION_ID = 888
+        const val CHANNEL_ID = "DriverTrackingChannel"
+        private const val TAG = "LocationService"
     }
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private lateinit var locationRequest: LocationRequest
-    private var isTracking = false
-    private var username: String = ""
-    private var wakeLock: PowerManager.WakeLock? = null
-    private lateinit var sharedPreferences: SharedPreferences
+    private var driverId: String = ""
+    private val db = FirebaseFirestore.getInstance()
 
     override fun onCreate() {
         super.onCreate()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        sharedPreferences = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        createNotificationChannel()
         
-        // Create notification channel for Android O and above
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "Location Tracking Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-        }
-
-        // Create location request with optimized settings for battery efficiency
-        locationRequest = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY, // Changed from HIGH_ACCURACY to save battery
-            60000L // Increased to 60 seconds to save battery
-        )
-        .setMinUpdateDistanceMeters(25f) // Increased to 25 meters to save battery
-        .setMinUpdateIntervalMillis(30000L) // 30 seconds
-        .build()
+        locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
+            .setMinUpdateIntervalMillis(5000L)
+            .setWaitForAccurateLocation(true)
+            .build()
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
-                    Log.d(TAG, "Location updated: ${location.latitude}, ${location.longitude}")
-                    // Store location in shared preferences and notify Flutter
-                    storeLocationInPrefs(location.latitude, location.longitude)
+                    syncToFirebase(location.latitude, location.longitude, location.accuracy)
                 }
             }
         }
+    }
 
-        // Acquire wake lock for reliable tracking
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "DriverApp::LocationTrackingWakeLock"
+    private fun syncToFirebase(lat: Double, lng: Double, acc: Float) {
+        if (driverId.isEmpty()) return
+
+        val timestamp = System.currentTimeMillis()
+        val data = hashMapOf<String, Any>(
+            "latitude" to lat,
+            "longitude" to lng,
+            "accuracy" to acc,
+            "lastUpdate" to FieldValue.serverTimestamp(),
+            "status" to "active",
+            "isOnDuty" to true
         )
-    }
 
-    private fun storeLocationInPrefs(lat: Double, lng: Double) {
-        with(sharedPreferences.edit()) {
-            putString(LAST_USERNAME, username)
-            putString(LAST_LOCATION_LAT, lat.toString())
-            putString(LAST_LOCATION_LNG, lng.toString())
-            putBoolean(LOCATION_UPDATED, true)
-            apply()
-        }
-        Log.d(TAG, "Location stored in prefs: $lat, $lng for user $username")
-    }
+        // 1. Update Live Snapshot (For Govt Map)
+        db.collection("drivers").document(driverId).update(data)
+            .addOnFailureListener {
+                // If update fails (doc might not exist in auto-onboarding), try set with merge
+                db.collection("drivers").document(driverId).set(data, com.google.firebase.firestore.SetOptions.merge())
+            }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
+        // 2. Add to Scalable History (For Audit Trail)
+        db.collection("drivers").document(driverId)
+            .collection("locations").document(timestamp.toString())
+            .set(data)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Extract username from Intent
-        intent?.getStringExtra("username")?.let {
-            if (it.isNotEmpty()) {
-                startTracking(it)
-            }
-        }
-
-        // Handle foreground service start properly for different Android versions
+        val inputId = intent?.getStringExtra("username")
+        if (inputId != null) driverId = inputId
+        
+        val notification = createNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, 
-                createNotification(), 
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            )
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } else {
-            startForeground(NOTIFICATION_ID, createNotification())
+            startForeground(NOTIFICATION_ID, notification)
         }
 
-        return START_STICKY // Restart service if killed
+        requestUpdates()
+        return START_STICKY
+    }
+
+    private fun requestUpdates() {
+        try {
+            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission lost: $e")
+        }
     }
 
     private fun createNotification(): Notification {
-        val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0, notificationIntent, 
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Driver Tracking Active")
-            .setContentText("Updating location for $username...")
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Vehicle Tracking Active")
+            .setContentText("Continuous 10s updates for $driverId")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
             .build()
     }
 
-    fun startTracking(username: String) {
-        this.username = username
-        if (!isTracking) {
-            isTracking = true
-            wakeLock?.acquire(TimeUnit.MINUTES.toMillis(30)) // Acquire for 30 minutes, will be renewed
-            
-            try {
-                // Request location updates
-                fusedLocationClient.requestLocationUpdates(
-                    locationRequest,
-                    locationCallback,
-                    Looper.getMainLooper()
-                )
-                Log.d(TAG, "Location tracking started for $username")
-            } catch (e: SecurityException) {
-                Log.e(TAG, "Location permission missing: ${e.message}")
-            }
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, "Tracking Service", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
-    fun stopTracking() {
-        if (isTracking) {
-            isTracking = false
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-            wakeLock?.release()
-            Log.d(TAG, "Location tracking stopped")
-        }
-    }
-
-    override fun onMethodCall(call: MethodCall, result: Result) {
-        // This won't be called directly since we're starting it as a Service, 
-        // but keeping it if we switch architecture later
-        when (call.method) {
-            "startTracking" -> {
-                val username = call.argument<String>("username") ?: ""
-                if (username.isNotEmpty()) {
-                    startTracking(username)
-                    result.success("Tracking started for $username")
-                } else {
-                    result.error("INVALID_USERNAME", "Username is required", null)
-                }
-            }
-            "stopTracking" -> {
-                stopTracking()
-                result.success("Tracking stopped")
-            }
-            "isTracking" -> {
-                result.success(isTracking)
-            }
-            else -> {
-                result.notImplemented()
-            }
-        }
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
         super.onDestroy()
-        stopTracking()
-        Log.d(TAG, "Location tracking service destroyed")
     }
 }
