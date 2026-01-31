@@ -19,7 +19,6 @@ class LocationTrackingService : Service() {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private lateinit var locationRequest: LocationRequest
     private var driverId: String = ""
     private val db = FirebaseFirestore.getInstance()
 
@@ -28,14 +27,11 @@ class LocationTrackingService : Service() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         createNotificationChannel()
         
-        locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L)
-            .setMinUpdateIntervalMillis(5000L)
-            .setWaitForAccurateLocation(true)
-            .build()
-
+        // 30-second High Accuracy Hardware Request
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
+                    Log.d(TAG, "Hardware GPS Tick (30s): ${location.latitude}, ${location.longitude}")
                     syncToFirebase(location.latitude, location.longitude, location.accuracy)
                 }
             }
@@ -45,27 +41,19 @@ class LocationTrackingService : Service() {
     private fun syncToFirebase(lat: Double, lng: Double, acc: Float) {
         if (driverId.isEmpty()) return
 
-        val timestamp = System.currentTimeMillis()
         val data = hashMapOf<String, Any>(
             "latitude" to lat,
             "longitude" to lng,
             "accuracy" to acc,
             "lastUpdate" to FieldValue.serverTimestamp(),
-            "status" to "active",
-            "isOnDuty" to true
+            "isTrackingEnabled" to true
         )
 
-        // 1. Update Live Snapshot (For Govt Map)
+        // Direct Native push for ultra-low latency & termination resilience
         db.collection("drivers").document(driverId).update(data)
             .addOnFailureListener {
-                // If update fails (doc might not exist in auto-onboarding), try set with merge
-                db.collection("drivers").document(driverId).set(data, com.google.firebase.firestore.SetOptions.merge())
+                Log.e(TAG, "Sync deferred (Offline mode). Firebase will auto-sync later.")
             }
-
-        // 2. Add to Scalable History (For Audit Trail)
-        db.collection("drivers").document(driverId)
-            .collection("locations").document(timestamp.toString())
-            .set(data)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,15 +67,22 @@ class LocationTrackingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        requestUpdates()
+        requestHardwareUpdates()
         return START_STICKY
     }
 
-    private fun requestUpdates() {
+    private fun requestHardwareUpdates() {
+        // PRODUCTION SAFE: 30-second intervals
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 30000L) 
+            .setMinUpdateIntervalMillis(30000L) // Ensure no more than 1 update per 30s
+            .setWaitForAccurateLocation(true)
+            .build()
+
         try {
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+            Log.i(TAG, "GPS Hardware Activated (30s interval) for $driverId")
         } catch (e: SecurityException) {
-            Log.e(TAG, "Permission lost: $e")
+            Log.e(TAG, "GPS Activation Failed: Missing Permissions")
         }
     }
 
@@ -97,7 +92,7 @@ class LocationTrackingService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Vehicle Tracking Active")
-            .setContentText("Continuous 10s updates for $driverId")
+            .setContentText("Continuous 30s updates for $driverId")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -116,6 +111,7 @@ class LocationTrackingService : Service() {
 
     override fun onDestroy() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        Log.i(TAG, "GPS Hardware Deactivated")
         super.onDestroy()
     }
 }

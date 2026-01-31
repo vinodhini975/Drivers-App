@@ -7,24 +7,24 @@ import 'package:flutter/foundation.dart';
 import '../models/location_model.dart';
 import 'database_service.dart';
 import 'duty_service.dart';
+import 'auth_service.dart';
 
 class EnhancedLocationService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
   final Battery _battery = Battery();
   final Connectivity _connectivity = Connectivity();
   final DatabaseService _dbService = DatabaseService.instance;
   final DutyService _dutyService = DutyService();
+  final AuthService _authService = AuthService();
 
   Future<bool> captureLocation(String driverId) async {
-    try {
-      // CRITICAL: Verify Firebase user is authenticated before any operations
-      if (!await _isDriverAuthenticated(driverId)) {
-        debugPrint('⚠️ Driver authentication failed. Location capture blocked.');
-        // Store locally but don't attempt Firestore write
-        return await _captureAndStoreOffline(driverId);
-      }
+    // 1. Guard: Ensure driver ID is valid
+    if (driverId.isEmpty) {
+      debugPrint('Sync skipped: Waiting for driver identity');
+      return false;
+    }
 
+    try {
       final isDutyActive = await _dutyService.isDutyActive();
       if (!isDutyActive) return false;
 
@@ -52,7 +52,7 @@ class EnhancedLocationService {
           await _syncToFirebase(location).timeout(const Duration(seconds: 5));
           return true;
         } catch (e) {
-          debugPrint('⚠️ Sync timeout or error, saving offline: $e');
+          debugPrint('⚠️ Network lag, saving offline: $e');
           await _dbService.insertLocation(location);
           return true;
         }
@@ -66,63 +66,31 @@ class EnhancedLocationService {
     }
   }
 
-  Future<bool> _captureAndStoreOffline(String driverId) async {
-    try {
-      Position pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.medium);
-      final location = LocationModel(
-        driverId: driverId,
-        latitude: pos.latitude,
-        longitude: pos.longitude,
-        accuracy: pos.accuracy,
-        speed: pos.speed,
-        batteryLevel: await _battery.batteryLevel,
-        timestamp: DateTime.now(),
-        isSynced: false,
-      );
-      await _dbService.insertLocation(location);
-      return true;
-    } catch (e) {
-      debugPrint('❌ Offline capture error: $e');
-      return false;
-    }
-  }
-
   Future<void> _syncToFirebase(LocationModel location) async {
-    // FINAL AUTHENTICATION GUARD - CRITICAL
-    if (!await _isDriverAuthenticated(location.driverId)) {
-      throw Exception('Permission Denied: User not authenticated or invalid driver');
-    }
-
     final docRef = _firestore.collection('drivers').doc(location.driverId);
     WriteBatch batch = _firestore.batch();
     
-    // Update main driver document
     batch.update(docRef, {
       'latitude': location.latitude,
       'longitude': location.longitude,
       'lastUpdate': FieldValue.serverTimestamp(),
-      'status': 'active',
-      'isOnDuty': location.isOnDuty,
+      'isActive': true,
     });
 
-    // Add to location history
-    final historyRef = docRef.collection('locations').doc();
+    final historyRef = docRef.collection('location_history').doc();
     batch.set(historyRef, {
       'latitude': location.latitude,
       'longitude': location.longitude,
       'timestamp': Timestamp.fromDate(location.timestamp),
-      'accuracy': location.accuracy,
-      'speed': location.speed,
-      'batteryLevel': location.batteryLevel,
     });
 
     await batch.commit();
   }
 
   Future<int> syncOfflineLocations() async {
-    // Check authentication before sync
-    if (!await _isDriverAuthenticatedForAnyDriver()) {
-      debugPrint('Sync blocked: No authenticated driver');
+    final driverId = await _authService.getCurrentDriverId();
+    if (driverId == null) {
+      debugPrint('Sync skipped: No authenticated driver found');
       return 0;
     }
 
@@ -142,46 +110,21 @@ class EnhancedLocationService {
              count++;
           }
         } catch (e) {
-          debugPrint('Sync failed for location, stopping retries: $e');
-          break; // Stop on first failure to avoid spamming
+          break; 
         }
       }
       return count;
     } catch (e) {
-      debugPrint('Sync error: $e');
       return 0;
     }
   }
 
   Future<bool> shouldContinueTracking() async {
+    final driverId = await _authService.getCurrentDriverId();
+    if (driverId == null) return false;
+    
     final active = await _dutyService.isDutyActive();
-    return active && await _isDriverAuthenticatedForAnyDriver();
-  }
-
-  // CRITICAL: Authentication verification method
-  Future<bool> _isDriverAuthenticated(String driverId) async {
-    final user = _auth.currentUser;
-    if (user == null) return false;
-    
-    final email = user.email;
-    if (email == null) return false;
-    
-    // Check email format and driver ID match
-    final isValidFormat = RegExp(r'.*@driverapp\.com$').hasMatch(email);
-    final containsDriverId = email.contains(driverId);
-    
-    return isValidFormat && containsDriverId;
-  }
-
-  // Helper to check if any driver is authenticated
-  Future<bool> _isDriverAuthenticatedForAnyDriver() async {
-    final user = _auth.currentUser;
-    if (user == null) return false;
-    
-    final email = user.email;
-    if (email == null) return false;
-    
-    return RegExp(r'.*@driverapp\.com$').hasMatch(email);
+    return active;
   }
 
   Stream<ConnectivityResult> get connectivityStream => _connectivity.onConnectivityChanged;

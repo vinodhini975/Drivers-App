@@ -3,93 +3,81 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
 
 class PermissionHelper {
-  /// Comprehensive check for Permissions + GPS Hardware Status
-  static Future<bool> ensureLocationRequirement(BuildContext context) async {
-    // 1. Check Permissions (Runtime)
-    bool hasPermissions = await _handlePermissions(context);
-    if (!hasPermissions) return false;
-
-    // 2. Check GPS Hardware (Is it turned ON?)
-    bool isGpsOn = await _ensureGpsEnabled(context);
-    return isGpsOn;
+  /// Check if all mandatory permissions are currently granted
+  static Future<bool> hasAllPermissions() async {
+    final status = await Permission.location.status;
+    final bgStatus = await Permission.locationAlways.status;
+    
+    // Both foreground and background must be granted
+    return status.isGranted && bgStatus.isGranted;
   }
 
-  static Future<bool> _handlePermissions(BuildContext context) async {
-    var status = await Permission.location.status;
+  /// Request mandatory permissions in sequence
+  static Future<bool> requestAllPermissions(BuildContext context) async {
+    // 1. Request Foreground Location (Fine/Coarse)
+    var status = await Permission.location.request();
     
-    if (status.isDenied) {
-      status = await Permission.location.request();
-    }
-
-    if (status.isPermanentlyDenied) {
-      if (context.mounted) {
-        _showSettingsDialog(context, 'Location permission is permanently denied. Please enable it in app settings.');
-      }
-      return false;
-    }
-
     if (status.isGranted) {
-      // For Background Tracking (Android 10+)
-      var bgStatus = await Permission.locationAlways.status;
-      if (bgStatus.isDenied) {
-        bgStatus = await Permission.locationAlways.request();
-      }
-      return bgStatus.isGranted;
-    }
-
-    return status.isGranted;
-  }
-
-  static Future<bool> _ensureGpsEnabled(BuildContext context) async {
-    bool isServiceEnabled = await Geolocator.isLocationServiceEnabled();
-    
-    if (!isServiceEnabled) {
-      // This will trigger the system dialog on Android if configured correctly,
-      // or we provide a clear prompt to the user.
-      if (context.mounted) {
-        bool userWantsToEnable = await showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('GPS is Disabled'),
-            content: const Text('Location tracking requires GPS to be ON. Would you like to enable it now?'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('NO')),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true), 
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                child: const Text('YES, ENABLE'),
-              ),
-            ],
-          ),
-        ) ?? false;
-
-        if (userWantsToEnable) {
-          // Open system location settings
-          await Geolocator.openLocationSettings();
-          
-          // Wait and check again (User comes back from settings)
-          int retries = 0;
-          while (retries < 5) {
-            await Future.delayed(const Duration(seconds: 2));
-            if (await Geolocator.isLocationServiceEnabled()) return true;
-            retries++;
+      // 2. Request Background Location (Always)
+      // Note: Android 11+ requires foreground to be granted first
+      var bgStatus = await Permission.locationAlways.request();
+      
+      if (bgStatus.isGranted) {
+        // 3. Check if GPS Hardware is enabled
+        bool isGpsOn = await Geolocator.isLocationServiceEnabled();
+        if (!isGpsOn) {
+          if (context.mounted) {
+            await _showGpsDialog(context);
           }
+          return await Geolocator.isLocationServiceEnabled();
         }
+        return true;
       }
-      return false;
     }
-    return true;
+    
+    if (status.isPermanentlyDenied || (await Permission.locationAlways.isPermanentlyDenied)) {
+      if (context.mounted) {
+        _showSettingsDialog(context);
+      }
+    }
+    
+    return false;
   }
 
-  static void _showSettingsDialog(BuildContext context, String message) {
+  static Future<void> _showGpsDialog(BuildContext context) async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('GPS Disabled'),
+        content: const Text('Please turn on GPS/Location services to continue.'),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await Geolocator.openLocationSettings();
+            },
+            child: const Text('OPEN SETMISSIONS'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static void _showSettingsDialog(BuildContext context) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Permission Required'),
-        content: Text(message),
+        content: const Text('Location permission is mandatory. Please enable "Allow all the time" in settings.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(onPressed: () => openAppSettings(), child: const Text('OPEN SETTINGS')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('OPEN SETTINGS'),
+          ),
         ],
       ),
     );

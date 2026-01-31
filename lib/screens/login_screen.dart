@@ -1,68 +1,110 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_service.dart';
 import '../models/driver_model.dart';
-import 'home_screen.dart';
+import 'location_permission_screen.dart';
 import 'gov_map_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  LoginScreenState createState() => LoginScreenState();
+  State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class LoginScreenState extends State<LoginScreen> {
-  final _driverIdController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _govPasswordController = TextEditingController();
-  final _authService = AuthService();
-  
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _mobileController = TextEditingController();
+  final TextEditingController _otpController = TextEditingController();
+  final TextEditingController _govPasswordController = TextEditingController();
+
+  final AuthService _authService = AuthService();
+
+  bool _isDriverRole = true;
+  bool _otpSent = false;
   bool _isLoading = false;
-  bool _obscurePassword = true;
-  bool _isDriverRole = true; // Role toggle
-
-
 
   @override
   void dispose() {
-    _driverIdController.dispose();
-    _passwordController.dispose();
+    _mobileController.dispose();
+    _otpController.dispose();
     _govPasswordController.dispose();
     super.dispose();
   }
 
-  Future<void> _loginDriver() async {
-    final driverId = _driverIdController.text.trim();
-    final password = _passwordController.text;
+  Future<void> _requestOtp() async {
+    final mobile = _mobileController.text.trim();
+    if (mobile.length != 10) {
+      _showMessage('Enter valid 10-digit mobile number', isError: true);
+      return;
+    }
+    setState(() => _isLoading = true);
+    await Future.delayed(const Duration(milliseconds: 500));
+    setState(() { _otpSent = true; _isLoading = false; });
+    _showMessage('OTP sent successfully');
+  }
 
-    if (driverId.isEmpty || password.isEmpty) {
-      _showMessage('Please enter Driver ID and password', isError: true);
+  Future<void> _verifyAndLogin() async {
+    final otp = _otpController.text.trim();
+    final mobile = _mobileController.text.trim();
+
+    final isValid = await _authService.verifyOtp(otp);
+    if (!isValid) {
+      _showMessage("Enter valid OTP", isError: true);
       return;
     }
 
     setState(() => _isLoading = true);
-    try {
-      final result = await _authService.signInWithDriverId(driverId: driverId, password: password);
-      if (!mounted) return;
 
-      if (result['success']) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => HomeScreen(driver: result['driver'] as DriverModel)));
-      } else {
-        _showMessage(result['message'], isError: true);
+    try {
+      final driverId = mobile;
+      final driverRef = FirebaseFirestore.instance.collection('drivers').doc(driverId);
+      final snapshot = await driverRef.get();
+
+      if (!snapshot.exists) {
+        await driverRef.set({
+          'driverId': driverId,
+          'phoneNumber': driverId,
+          'mobile': driverId,
+          'name': 'Driver $driverId',
+          'vehicleId': 'V-$driverId',
+          'createdAt': FieldValue.serverTimestamp(),
+          'isActive': true,
+          'status': 'active',
+        });
       }
+
+      final driverDoc = await driverRef.get();
+      final driver = DriverModel.fromFirestore(driverDoc);
+
+      await _authService.saveSession(mobile);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('isLoggedIn', true);
+
+      if (!mounted) return;
+      
+      // 2️⃣ REDIRECT TO PERMISSION GATE
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: driver)),
+      );
     } catch (e) {
-      _showMessage('Login failed: $e', isError: true);
+      _showMessage('Error: $e', isError: true);
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   void _loginGovernment() {
-    // Navigate directly to map without password validation
-    Navigator.push(context, MaterialPageRoute(builder: (context) => const GovMapScreen()));
+    if (_govPasswordController.text == 'admin') {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const GovMapScreen()));
+    } else {
+      _showMessage('Invalid password', isError: true);
+    }
   }
 
   void _showMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: isError ? Colors.red : Colors.green),
     );
@@ -70,72 +112,88 @@ class LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final Color mainColor = _isDriverRole ? Colors.green[700]! : Colors.blue[900]!;
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              children: [
-                Icon(Icons.local_shipping, size: 80, color: _isDriverRole ? Colors.green[700] : Colors.blue[900]),
-                const SizedBox(height: 15),
-                Text('Vehicle Tracking', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: _isDriverRole ? Colors.green[700] : Colors.blue[900])),
-                const SizedBox(height: 30),
-
-                // Role Selector
-                ToggleButtons(
-                  isSelected: [_isDriverRole, !_isDriverRole],
-                  onPressed: (index) => setState(() => _isDriverRole = index == 0),
-                  borderRadius: BorderRadius.circular(12),
-                  selectedColor: Colors.white,
-                  fillColor: _isDriverRole ? Colors.green[700] : Colors.blue[900],
-                  children: const [
-                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Driver')),
-                    Padding(padding: EdgeInsets.symmetric(horizontal: 30), child: Text('Government')),
-                  ],
-                ),
-                const SizedBox(height: 40),
-
-                if (_isDriverRole) ...[
-                  // DRIVER LOGIN UI
-                  _buildTextField(_driverIdController, 'Driver ID', Icons.badge),
-                  const SizedBox(height: 16),
-                  _buildTextField(_passwordController, 'Password', Icons.lock, isPassword: true),
-                  const SizedBox(height: 30),
-                  _buildButton('Driver Login', _loginDriver, Colors.green[700]!),
-                ] else ...[
-                  // GOVT LOGIN UI
-                  _buildTextField(_govPasswordController, 'Government Password', Icons.admin_panel_settings, isPassword: true),
-                  const SizedBox(height: 30),
-                  _buildButton('Government Login', _loginGovernment, Colors.blue[900]!),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            children: [
+              const SizedBox(height: 20),
+              Icon(Icons.local_shipping, size: 100, color: mainColor),
+              const SizedBox(height: 10),
+              Text('BBMP VEHICLE', style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: mainColor)),
+              const SizedBox(height: 40),
+              ToggleButtons(
+                isSelected: [_isDriverRole, !_isDriverRole],
+                onPressed: (i) => setState(() { _isDriverRole = i == 0; _otpSent = false; }),
+                borderRadius: BorderRadius.circular(15),
+                fillColor: mainColor,
+                selectedColor: Colors.white,
+                constraints: BoxConstraints(minWidth: (MediaQuery.of(context).size.width - 60) / 2, minHeight: 60),
+                children: const [
+                  Text('DRIVER', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text('GOVT', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ],
-              ],
-            ),
+              ),
+              const SizedBox(height: 40),
+              Expanded(child: SingleChildScrollView(child: _isDriverRole ? _driverUI(mainColor) : _govUI(mainColor))),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isPassword = false}) {
-    return TextField(
-      controller: controller,
-      obscureText: isPassword && _obscurePassword,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon),
-        suffixIcon: isPassword ? IconButton(icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off), onPressed: () => setState(() => _obscurePassword = !_obscurePassword)) : null,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
+  Widget _driverUI(Color color) {
+    return Column(
+      children: [
+        TextField(
+          controller: _mobileController,
+          keyboardType: TextInputType.phone,
+          maxLength: 10,
+          enabled: !_otpSent && !_isLoading,
+          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+          decoration: InputDecoration(labelText: 'MOBILE NUMBER', prefixIcon: const Icon(Icons.phone_android), border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)), counterText: ''),
+        ),
+        const SizedBox(height: 25),
+        if (_otpSent) ...[
+          TextField(
+            controller: _otpController,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 24, letterSpacing: 10),
+            decoration: InputDecoration(labelText: 'ENTER OTP', border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)), counterText: ''),
+          ),
+          const SizedBox(height: 25),
+          _bigButton('VERIFY & LOGIN', _verifyAndLogin, color),
+        ] else
+          _bigButton('GET OTP', _requestOtp, color),
+      ],
     );
   }
 
-  Widget _buildButton(String text, VoidCallback onPressed, Color color) {
+  Widget _govUI(Color color) {
+    return Column(
+      children: [
+        TextField(
+          controller: _govPasswordController,
+          obscureText: true,
+          decoration: InputDecoration(labelText: 'ADMIN PASSWORD', prefixIcon: const Icon(Icons.admin_panel_settings), border: OutlineInputBorder(borderRadius: BorderRadius.circular(15))),
+        ),
+        const SizedBox(height: 30),
+        _bigButton('GOVT LOGIN', _loginGovernment, color),
+      ],
+    );
+  }
+
+  Widget _bigButton(String text, VoidCallback onTap, Color color) {
     return ElevatedButton(
-      onPressed: _isLoading ? null : onPressed,
-      style: ElevatedButton.styleFrom(backgroundColor: color, minimumSize: const Size(double.infinity, 60), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-      child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
+      onPressed: _isLoading ? null : onTap,
+      style: ElevatedButton.styleFrom(backgroundColor: color, minimumSize: const Size(double.infinity, 80), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+      child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white)),
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
+import 'scan_qr_screen.dart';
 
 class GovMapScreen extends StatefulWidget {
   const GovMapScreen({super.key});
@@ -15,16 +16,17 @@ class _GovMapScreenState extends State<GovMapScreen> {
   GoogleMapController? _mapController;
   final Map<String, Marker> _markers = {};
   StreamSubscription? _subscription;
+  bool _showList = false;
 
   static const CameraPosition _initialCamera = CameraPosition(
-    target: LatLng(12.9716, 77.5946),
+    target: LatLng(12.9716, 77.5946), // Bangalore Center
     zoom: 12,
   );
 
   @override
   void initState() {
     super.initState();
-    _startListeningToDrivers();
+    _startLiveTracking();
   }
 
   @override
@@ -34,11 +36,11 @@ class _GovMapScreenState extends State<GovMapScreen> {
     super.dispose();
   }
 
-  void _startListeningToDrivers() {
-    // Read-only query - compatible with current rules
+  /// 🛰️ REAL-TIME MARKER LOGIC
+  void _startLiveTracking() {
     _subscription = _firestore
         .collection('drivers')
-        .where('status', isEqualTo: 'active')  // Filter for active drivers
+        .where('isTrackingEnabled', isEqualTo: true)
         .snapshots()
         .listen((snapshot) {
       if (!mounted) return;
@@ -49,29 +51,31 @@ class _GovMapScreenState extends State<GovMapScreen> {
           final data = doc.data();
           final lat = data['latitude'] as double?;
           final lng = data['longitude'] as double?;
-          final driverId = data['driverId'] as String? ?? 'Unknown';
-          final name = data['name'] as String? ?? 'Driver';
-          final status = data['status'] as String?;
+          final mobile = data['phoneNumber'] ?? 'No Mobile';
+          final vehicle = data['vehicleId'] ?? 'No Vehicle';
 
-          if (lat != null && lng != null && status == 'active') {
-            final marker = Marker(
+          if (lat != null && lng != null) {
+            _markers[doc.id] = Marker(
               markerId: MarkerId(doc.id),
               position: LatLng(lat, lng),
+              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
               infoWindow: InfoWindow(
-                title: name,
-                snippet: 'ID: $driverId | Vehicle: ${data['vehicleId']}',
-              ),
-              icon: BitmapDescriptor.defaultMarkerWithHue(
-                BitmapDescriptor.hueGreen,
+                title: 'Truck: $vehicle',
+                snippet: 'Driver: $mobile',
               ),
             );
-            _markers[doc.id] = marker;
           }
         }
       });
-    }, onError: (error) {
-      // Handle errors gracefully without spam
-      debugPrint('Government map error: $error');
+    });
+  }
+
+  /// 🛑 REMOTE DISABLE LOGIC
+  Future<void> _disableTracking(String docId) async {
+    await _firestore.collection('drivers').doc(docId).update({
+      'isTrackingEnabled': false,
+      'activeSessionId': null, // Invalidate current session
+      'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
@@ -79,35 +83,65 @@ class _GovMapScreenState extends State<GovMapScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Government Live Monitoring'),
+        title: const Text('Gov Monitoring'),
         backgroundColor: Colors.blue[900],
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _startListeningToDrivers(),
+            icon: const Icon(Icons.qr_code_scanner),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanQrScreen())),
+          ),
+          IconButton(
+            icon: Icon(_showList ? Icons.map : Icons.list),
+            onPressed: () => setState(() => _showList = !_showList),
           ),
         ],
       ),
-      body: GoogleMap(
-        initialCameraPosition: _initialCamera,
-        markers: _markers.values.toSet(),
-        onMapCreated: (controller) => _mapController = controller,
-        myLocationEnabled: false,
-        myLocationButtonEnabled: false,
-        zoomControlsEnabled: true,
-        mapType: MapType.normal,
+      body: Stack(
+        children: [
+          GoogleMap(
+            initialCameraPosition: _initialCamera,
+            markers: _markers.values.toSet(),
+            onMapCreated: (c) => _mapController = c,
+            myLocationEnabled: false, // Govt device doesn't track itself
+            zoomControlsEnabled: true,
+          ),
+          if (_showList) _buildActiveDriversList(),
+        ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          if (_markers.isNotEmpty) {
-            final firstMarker = _markers.values.first.position;
-            _mapController?.animateCamera(CameraUpdate.newLatLngZoom(firstMarker, 14));
-          }
+    );
+  }
+
+  Widget _buildActiveDriversList() {
+    return Container(
+      color: Colors.white.withOpacity(0.95),
+      child: StreamBuilder<QuerySnapshot>(
+        stream: _firestore.collection('drivers').where('isTrackingEnabled', isEqualTo: true).snapshots(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          final docs = snapshot.data!.docs;
+          
+          if (docs.isEmpty) return const Center(child: Text('No Active Trucks Found'));
+
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const Divider(),
+            itemBuilder: (context, index) {
+              final data = docs[index].data() as Map<String, dynamic>;
+              return ListTile(
+                leading: const Icon(Icons.local_shipping, color: Colors.blue),
+                title: Text(data['vehicleId'] ?? 'Unknown Vehicle'),
+                subtitle: Text('Mobile: ${data['phoneNumber']}'),
+                trailing: ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: () => _disableTracking(docs[index].id),
+                  child: const Text('DISABLE', style: TextStyle(color: Colors.white)),
+                ),
+              );
+            },
+          );
         },
-        label: Text('Found ${_markers.length} Drivers'),
-        icon: const Icon(Icons.local_shipping),
-        backgroundColor: Colors.blue[900],
       ),
     );
   }
