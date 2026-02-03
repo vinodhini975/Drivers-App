@@ -1,160 +1,104 @@
 package com.example.driver_app
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.IntentSender
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.*
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import android.content.Intent
-import android.content.Context
-import android.content.SharedPreferences
-import android.os.Handler
-import android.os.Looper
-import androidx.core.content.ContextCompat
-import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "location_tracking_service"
-    private var locationUpdateHandler: Handler? = null
-    private var locationUpdateRunnable: Runnable? = null
-    private lateinit var sharedPreferences: SharedPreferences
-    private var eventSink: EventChannel.EventSink? = null
-    
+    private val CHANNEL = "location_permission"
+    private val GPS_REQUEST_CODE = 1001
+    private val PERMISSION_REQUEST_CODE = 1002
+    private var pendingResult: MethodChannel.Result? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
-        sharedPreferences = applicationContext.getSharedPreferences("LocationTrackingPrefs", Context.MODE_PRIVATE)
-        
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "startTracking" -> {
-                    val username = call.argument<String>("username")
-                    startLocationTrackingService(username)
-                    result.success("Service started")
-                }
-                "stopTracking" -> {
-                    stopLocationTrackingService()
-                    result.success("Service stopped")
-                }
-                "isTracking" -> {
-                    // Check if the service is running by checking SharedPreferences
-                    val lastUsername = sharedPreferences.getString("last_username", null)
-                    val isRunning = lastUsername != null && lastUsername.isNotEmpty()
-                    android.util.Log.d("MainActivity", "isTracking called: $isRunning (username=$lastUsername)")
-                    result.success(isRunning)
-                }
-                "getLastLocation" -> {
-                    // This method will be called by Flutter to get the latest location
-                    val lat = sharedPreferences.getString("last_location_lat", null)
-                    val lng = sharedPreferences.getString("last_location_lng", null)
-                    val lastUsername = sharedPreferences.getString("last_username", null)
-                    val updated = sharedPreferences.getBoolean("location_updated", false)
-                    
-                    android.util.Log.d("MainActivity", "getLastLocation called: lat=$lat, lng=$lng, username=$lastUsername, updated=$updated")
-                    
-                    if (lat != null && lng != null && lastUsername != null && updated) {
-                        try {
-                            val locationMap = mapOf(
-                                "lat" to lat.toDouble(),
-                                "lng" to lng.toDouble(),
-                                "username" to lastUsername,
-                                "updated" to true
-                            )
-                            result.success(locationMap)
-                            // Reset the updated flag after successful retrieval
-                            sharedPreferences.edit().putBoolean("location_updated", false).apply()
-                            android.util.Log.d("MainActivity", "Location data sent to Flutter: $locationMap")
-                        } catch (e: Exception) {
-                            android.util.Log.e("MainActivity", "Error parsing location data: ${e.message}")
-                            result.success(null)
-                        }
-                    } else {
-                        android.util.Log.d("MainActivity", "No valid location data available or not updated")
-                        result.success(null)
-                    }
-                }
-                else -> result.notImplemented()
-            }
-        }
-        
-        // Create event channel for real-time location updates
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "$CHANNEL/events").setStreamHandler(
-            object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    eventSink = events
-                }
 
-                override fun onCancel(arguments: Any?) {
-                    eventSink = null
-                }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+            if (call.method == "requestLocationAndEnableGPS") {
+                pendingResult = result
+                checkPermissionsAndEnableGPS()
+            } else {
+                result.notImplemented()
             }
+        }
+    }
+
+    private fun checkPermissionsAndEnableGPS() {
+        val permissions = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
         )
-        
-        // Start periodic checking for location updates from the native service
-        startLocationUpdateListener()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        }
+
+        val missingPermissions = permissions.filter {
+            ActivityCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), PERMISSION_REQUEST_CODE)
+        } else {
+            enableGPS()
+        }
     }
-    
-    private fun startLocationUpdateListener() {
-        locationUpdateHandler = Handler(Looper.getMainLooper())
-        locationUpdateRunnable = object : Runnable {
-            override fun run() {
-                // Check if location was updated
-                if (sharedPreferences.getBoolean("location_updated", false)) {
-                    // Location was updated, send to Flutter via event channel
-                    val lat = sharedPreferences.getString("last_location_lat", null)
-                    val lng = sharedPreferences.getString("last_location_lng", null)
-                    val username = sharedPreferences.getString("last_username", null)
-                    
-                    if (lat != null && lng != null && username != null) {
-                        val locationMap = mapOf(
-                            "lat" to lat.toDouble(),
-                            "lng" to lng.toDouble(),
-                            "username" to username
-                        )
-                        
-                        eventSink?.success(locationMap)
-                        android.util.Log.d("MainActivity", "Location update sent to Flutter: $locationMap")
-                        
-                        // Reset the updated flag after sending
-                        sharedPreferences.edit().putBoolean("location_updated", false).apply()
-                    }
+
+    private fun enableGPS() {
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L).build()
+        val builder = LocationSettingsRequest.Builder().addLocationRequest(locationRequest)
+        val client: SettingsClient = LocationServices.getSettingsClient(this)
+        val task = client.checkLocationSettings(builder.build())
+
+        task.addOnSuccessListener {
+            pendingResult?.success("SUCCESS")
+            pendingResult = null
+        }
+
+        task.addOnFailureListener { exception ->
+            if (exception is ResolvableApiException) {
+                try {
+                    exception.startResolutionForResult(this, GPS_REQUEST_CODE)
+                } catch (sendEx: IntentSender.SendIntentException) {
+                    pendingResult?.error("GPS_ERROR", "Could not show GPS dialog", null)
+                    pendingResult = null
                 }
-                
-                // Schedule next check
-                locationUpdateHandler?.postDelayed(this, 5000) // Check every 5 seconds
+            } else {
+                pendingResult?.error("GPS_UNAVAILABLE", "Device does not support GPS settings", null)
+                pendingResult = null
             }
         }
-        locationUpdateHandler?.post(locationUpdateRunnable!!)
     }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        locationUpdateRunnable?.let {
-            locationUpdateHandler?.removeCallbacks(it)
-        }
-        eventSink = null
-    }
-    
-    private fun startLocationTrackingService(username: String?) {
-        if (username != null) {
-            val intent = Intent(this, LocationTrackingService::class.java)
-            intent.putExtra("username", username)
-            // Use ContextCompat to handle foreground service start compatibly across versions
-            ContextCompat.startForegroundService(this, intent)
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                enableGPS()
+            } else {
+                pendingResult?.success("FAILURE")
+                pendingResult = null
+            }
         }
     }
-    
-    private fun stopLocationTrackingService() {
-        android.util.Log.d("MainActivity", "Stopping location tracking service")
-        val intent = Intent(this, LocationTrackingService::class.java)
-        stopService(intent)
-        
-        // Clear the tracking data from SharedPreferences
-        sharedPreferences.edit().apply {
-            remove("last_username")
-            remove("last_location_lat")
-            remove("last_location_lng")
-            remove("location_updated")
-            apply()
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == GPS_REQUEST_CODE) {
+            if (resultCode == Activity.RESULT_OK) {
+                pendingResult?.success("SUCCESS")
+            } else {
+                pendingResult?.success("FAILURE")
+            }
+            pendingResult = null
         }
-        android.util.Log.d("MainActivity", "Location tracking service stopped and prefs cleared")
     }
 }

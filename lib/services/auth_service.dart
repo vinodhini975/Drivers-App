@@ -6,6 +6,7 @@ class AuthService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   
   static const String _isLoggedInKey = 'is_logged_in';
+  static const String _isGovLoggedInKey = 'is_gov_logged_in';
   static const String _userMobileKey = 'user_mobile';
 
   /* ================= OTP MECHANISM (UNCHANGED) ================= */
@@ -13,26 +14,35 @@ class AuthService {
     return RegExp(r'^[0-9]{4,6}$').hasMatch(otp);
   }
 
-  /* ================= SESSION PERSISTENCE ================= */
-  Future<void> saveSession(String mobile) async {
+  /* ================= DRIVER SESSION ================= */
+  Future<void> saveDriverSession(String mobile) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_isLoggedInKey, true);
     await prefs.setString(_userMobileKey, mobile);
+    await prefs.setBool(_isGovLoggedInKey, false);
   }
 
-  Future<bool> isLoggedIn() async {
+  Future<bool> isDriverLoggedIn() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_isLoggedInKey) ?? false;
   }
 
-  /// Returns the stored mobile number (Driver ID) directly
+  /* ================= GOVERNMENT SESSION ================= */
+  Future<void> saveGovSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_isGovLoggedInKey, true);
+    await prefs.setBool(_isLoggedInKey, false);
+  }
+
+  Future<bool> isGovLoggedIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_isGovLoggedInKey) ?? false;
+  }
+
+  /* ================= COMMON LOGIC ================= */
   Future<String?> getCurrentDriverId() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_userMobileKey);
-  }
-
-  Future<String?> getSavedMobile() async {
-    return getCurrentDriverId();
   }
 
   Future<void> signOut() async {

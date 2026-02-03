@@ -4,7 +4,6 @@ import '../services/auth_service.dart';
 import '../models/driver_model.dart';
 import 'location_permission_screen.dart';
 import 'gov_map_screen.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -31,6 +30,8 @@ class _LoginScreenState extends State<LoginScreen> {
     _govPasswordController.dispose();
     super.dispose();
   }
+
+  /* ================= DRIVER LOGIN (PERSISTENT) ================= */
 
   Future<void> _requestOtp() async {
     final mobile = _mobileController.text.trim();
@@ -77,13 +78,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final driverDoc = await driverRef.get();
       final driver = DriverModel.fromFirestore(driverDoc);
 
-      await _authService.saveSession(mobile);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isLoggedIn', true);
+      // ✅ SAVE DRIVER SESSION LOCALLY
+      await _authService.saveDriverSession(mobile);
 
       if (!mounted) return;
-      
-      // 2️⃣ REDIRECT TO PERMISSION GATE
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: driver)),
@@ -95,13 +93,21 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _loginGovernment() {
+  /* ================= GOVT LOGIN (PERSISTENT) ================= */
+
+  void _loginGovernment() async {
     if (_govPasswordController.text == 'admin') {
+      // ✅ SAVE GOVT SESSION LOCALLY
+      await _authService.saveGovSession();
+      
+      if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const GovMapScreen()));
     } else {
       _showMessage('Invalid password', isError: true);
     }
   }
+
+  /* ================= UI COMPONENTS ================= */
 
   void _showMessage(String message, {bool isError = false}) {
     if (!mounted) return;
@@ -181,7 +187,11 @@ class _LoginScreenState extends State<LoginScreen> {
         TextField(
           controller: _govPasswordController,
           obscureText: true,
-          decoration: InputDecoration(labelText: 'ADMIN PASSWORD', prefixIcon: const Icon(Icons.admin_panel_settings), border: OutlineInputBorder(borderRadius: BorderRadius.circular(15))),
+          decoration: InputDecoration(
+            labelText: 'ADMIN PASSWORD',
+            prefixIcon: const Icon(Icons.admin_panel_settings),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
+          ),
         ),
         const SizedBox(height: 30),
         _bigButton('GOVT LOGIN', _loginGovernment, color),
