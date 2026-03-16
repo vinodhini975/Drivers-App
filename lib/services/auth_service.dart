@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter/foundation.dart';
 import '../models/driver_model.dart';
 
 class AuthService {
@@ -368,16 +369,16 @@ class AuthService {
       
       // Update last login
       try {
-        await _firestore.collection('drivers').doc(driver.driverId).update({
+        await _firestore.collection('drivers').doc(driver.id).update({
           'lastLogin': FieldValue.serverTimestamp(),
           'status': 'active',
         });
       } catch (e) {
-        print('Warning: Could not update last login: $e');
+        debugPrint('Warning: Could not update last login: $e');
       }
       
       // Save to local storage using the main branch's session logic
-      await saveDriverSession(driver.phoneNumber, email: email, driverId: driver.driverId);
+      await saveDriverSession(driver.phoneNumber, email: email, driverId: driver.id);
       
       return {
         'success': true,

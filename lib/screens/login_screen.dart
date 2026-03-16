@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../services/auth_service.dart';
 import '../models/driver_model.dart';
 import 'location_permission_screen.dart';
 import 'gov_map_screen.dart';
-import 'home_screen.dart';
 import 'register_screen.dart';
 import 'google_signup_complete_screen.dart';
 
@@ -271,6 +269,4 @@ class _LoginScreenState extends State<LoginScreen> {
       child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
     );
   }
-}
-}
 }
