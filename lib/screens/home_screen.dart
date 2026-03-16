@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/driver_model.dart';
 import '../services/auth_service.dart';
-import '../services/duty_service.dart';
 import '../services/enhanced_location_service.dart';
-import '../services/permission_helper.dart';
 import '../services/native_location_service.dart';
 import 'login_screen.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'location_permission_screen.dart';
+import '../services/location_permission_service.dart';
 
 class HomeScreen extends StatefulWidget {
   final DriverModel driver;
@@ -19,370 +21,220 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AuthService _authService = AuthService();
-  final DutyService _dutyService = DutyService();
   final EnhancedLocationService _locationService = EnhancedLocationService();
-  
-  Timer? _locationTimer;
-  Timer? _dutyTimer;
-  StreamSubscription? _batterySubscription;
-  StreamSubscription? _connectivitySubscription;
-  
-  bool _isDutyActive = false;
-  bool _isLoading = false;
-  int _dutyDurationMinutes = 0;
-  int _batteryLevel = 100;
-  bool _isBatteryLow = false;
-  
-  bool _backgroundServiceStarted = false; // Track service state
+
+  StreamSubscription? _sentinelSubscription;
+  StreamSubscription? _permissionSubscription;
+  bool _isTrackingActive = false;
+  late String _currentSessionId;
+  bool _permissionsVerified = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initialize();
+    _currentSessionId = "SESS_${DateTime.now().millisecondsSinceEpoch}";
+    
+    _verifyPermissionsOnInit();
+    _startReactiveSentinel();
+    _startPermissionMonitoring();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _locationTimer?.cancel();
-    _dutyTimer?.cancel();
-    _batterySubscription?.cancel();
-    _connectivitySubscription?.cancel();
+    _sentinelSubscription?.cancel();
+    _permissionSubscription?.cancel();
     super.dispose();
   }
 
-  Future<void> _initialize() async {
-    await _checkDutyStatus();
-    await _checkBatteryStatus();
-    _startBatteryMonitoring();
-    _startConnectivityMonitoring();
-    
-    if (_isDutyActive && !_backgroundServiceStarted) {
-      await _startBackgroundService();
-      await _startTracking();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _verifyMandatoryCompliance();
     }
   }
 
-  Future<void> _startTracking() async {
-    _locationTimer?.cancel();
-    // Reduce frequency since Android service handles primary tracking
-    _locationTimer = Timer.periodic(const Duration(minutes: 5), (timer) async {
-      // Check if duty is active
-      final isDutyActive = await _dutyService.isDutyActive();
-      if (isDutyActive) {
-        await _locationService.captureLocation(widget.driver.driverId);
-      } else {
-        timer.cancel();
+  Future<void> _verifyPermissionsOnInit() async {
+    final permissionsGranted = await LocationPermissionService.areAllPermissionsGranted();
+    if (!permissionsGranted && mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: widget.driver)),
+      );
+    } else {
+      setState(() => _permissionsVerified = true);
+    }
+  }
+
+  void _startPermissionMonitoring() {
+    _permissionSubscription = Permission.location.status.asStream().listen((status) async {
+      final allPermissions = await LocationPermissionService.areAllPermissionsGranted();
+      if (!allPermissions && mounted) {
+        await _handlePermissionRevocation();
       }
     });
   }
 
-  Future<void> _checkDutyStatus() async {
-    final active = await _dutyService.isDutyActive();
-    setState(() => _isDutyActive = active);
-    if (active) _startDutyTimer();
-  }
-
-  Future<void> _checkBatteryStatus() async {
-    final status = await _dutyService.checkBatteryStatus();
-    setState(() { _batteryLevel = status['level']; _isBatteryLow = status['isLow']; });
-  }
-
-  void _startBatteryMonitoring() {
-    _batterySubscription = _dutyService.batteryLevelStream.listen((level) {
-      setState(() { _batteryLevel = level; _isBatteryLow = level < 20; });
-    });
-  }
-
-  void _startConnectivityMonitoring() {
-    _connectivitySubscription = _locationService.connectivityStream.listen((result) {
-      if (result != ConnectivityResult.none) {
-        _locationService.syncOfflineLocations();
-      }
-    });
-  }
-
-  void _startDutyTimer() {
-    _dutyTimer?.cancel();
-    _dutyTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
-      final duration = await _dutyService.getCurrentDutyDuration();
-      if (mounted) setState(() => _dutyDurationMinutes = duration);
-    });
-  }
-  
-  Future<void> _startBackgroundService() async {
-    if (_backgroundServiceStarted) {
-      return; // Service already started
+  Future<void> _handlePermissionRevocation() async {
+    if (_isTrackingActive) {
+      await _triggerStopTracking();
     }
     
-    try {
-      await NativeLocationService.startTracking(widget.driver.driverId);
-      _backgroundServiceStarted = true;
-      debugPrint('Background location service started for driver: ${widget.driver.driverId}');
-    } catch (e) {
-      debugPrint('Failed to start background service: $e');
-    }
-  }
-
-  Future<void> _startDuty() async {
-    final ready = await PermissionHelper.ensureLocationRequirement(context);
-    if (!ready) return;
-
-    setState(() => _isLoading = true);
-    final result = await _dutyService.startDuty(widget.driver.driverId);
-    if (result['success']) {
-      setState(() => _isDutyActive = true);
-      _startDutyTimer();
+    if (mounted) {
+      setState(() {
+        _permissionsVerified = false;
+        _isTrackingActive = false;
+      });
       
-      // Start background service if not already started
-      if (!_backgroundServiceStarted) {
-        await _startBackgroundService();
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: widget.driver)),
+      );
+    }
+  }
+
+  Future<void> _verifyMandatoryCompliance() async {
+    final stillHasAccess = await LocationPermissionService.areAllPermissionsGranted();
+    if (!stillHasAccess && mounted) {
+      _triggerStopTracking();
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: widget.driver)),
+      );
+    }
+  }
+
+  void _startReactiveSentinel() {
+    _sentinelSubscription = FirebaseFirestore.instance
+        .collection('drivers')
+        .doc(widget.driver.id)
+        .snapshots()
+        .listen((doc) {
+      if (!doc.exists) return;
+      final data = doc.data()!;
+      final bool remoteEnabled = data['isTrackingEnabled'] ?? false;
+      final String? serverSessionId = data['activeSessionId'];
+
+      if (remoteEnabled && serverSessionId == _currentSessionId) {
+        if (!_isTrackingActive) _triggerStartTracking();
+      } else {
+        if (_isTrackingActive) _triggerStopTracking();
       }
-      await _startTracking();
-    }
-    setState(() => _isLoading = false);
+    });
   }
 
-  Future<void> _endDuty() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('End Duty'),
-        content: const Text('Are you sure you want to end your duty and stop location tracking?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('End Duty', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
-    setState(() => _isLoading = true);
-    _locationTimer?.cancel();
-    await _dutyService.endDuty(widget.driver.driverId);
-    
-    // Stop background service
-    if (_backgroundServiceStarted) {
-      await NativeLocationService.stopTracking();
-      _backgroundServiceStarted = false;
-      debugPrint('Background location service stopped');
-    }
-    
-    setState(() { _isDutyActive = false; _dutyDurationMinutes = 0; });
-    _dutyTimer?.cancel();
-    setState(() => _isLoading = false);
+  Future<void> _triggerStartTracking() async {
+    if (mounted) setState(() => _isTrackingActive = true);
+    await NativeLocationService.startTracking(widget.driver.id);
+    Timer.periodic(const Duration(seconds: 30), (timer) async {
+      if (!_isTrackingActive) {
+        timer.cancel();
+        return;
+      }
+      await _locationService.captureLocation(widget.driver.id);
+    });
   }
 
-  Future<void> _logout() async {
-    if (_isDutyActive) {
-      _showMessage('Please end duty before logging out', isError: true);
+  Future<void> _triggerStopTracking() async {
+    if (mounted) setState(() => _isTrackingActive = false);
+    await NativeLocationService.stopTracking();
+  }
+
+  Future<void> _handleLogout() async {
+    if (_isTrackingActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tracking active - Controlled by Government'), backgroundColor: Colors.red),
+      );
       return;
     }
-    
-    // Stop Android native service if running
-    if (_backgroundServiceStarted) {
-      await NativeLocationService.stopTracking();
-      _backgroundServiceStarted = false;
-      debugPrint('Background location service stopped on logout');
-    }
-    
     await _authService.signOut();
     if (!mounted) return;
-    Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
-  }
-
-  void _showMessage(String msg, {bool isError = false}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: isError ? Colors.red : Colors.green),
-    );
+    Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final statusColor = _isTrackingActive ? Colors.green : Colors.orange;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('Driver Dashboard', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Track Connect'),
         backgroundColor: Colors.green[700],
-        foregroundColor: Colors.white,
         elevation: 0,
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _handleLogout)],
       ),
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            // Profile Header
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(24, 10, 24, 30),
-              decoration: BoxDecoration(
-                color: Colors.green[700],
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(35)),
-                boxShadow: [BoxShadow(color: Colors.green.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5))],
-              ),
-              child: Column(
-                children: [
-                  const CircleAvatar(
-                    radius: 45,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.person, size: 60, color: Colors.green),
-                  ),
-                  const SizedBox(height: 15),
-                  Text(widget.driver.name, 
-                       style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(20)),
-                    child: Text('ID: ${widget.driver.driverId}', style: const TextStyle(color: Colors.white, fontSize: 14)),
-                  ),
-                  const SizedBox(height: 25),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildHeaderStat(Icons.battery_3_bar, '$_batteryLevel%', 'Battery', _isBatteryLow ? Colors.red[200]! : Colors.white),
-                      _buildHeaderStat(Icons.access_time_filled, '${_dutyDurationMinutes}m', 'Duty Time', Colors.white),
-                      _buildHeaderStat(Icons.local_shipping, widget.driver.vehicleId, 'Vehicle', Colors.white),
-                    ],
-                  )
-                ],
-              ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 40),
+            decoration: BoxDecoration(
+              color: Colors.green[700],
+              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(40)),
             ),
-
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Duty Status Control
-                  Card(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-                    elevation: 5,
-                    shadowColor: Colors.black26,
-                    child: Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(25),
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: _isDutyActive 
-                            ? [Colors.white, Colors.green[50]!] 
-                            : [Colors.white, Colors.red[50]!],
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                _isDutyActive ? Icons.online_prediction : Icons.offline_bolt,
-                                color: _isDutyActive ? Colors.green : Colors.red,
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                _isDutyActive ? 'LOCATION TRACKING ON' : 'LOCATION TRACKING OFF',
-                                style: TextStyle(
-                                  fontSize: 16, 
-                                  fontWeight: FontWeight.w800, 
-                                  color: _isDutyActive ? Colors.green[800] : Colors.red[800],
-                                  letterSpacing: 1.0,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 20),
-                          ElevatedButton(
-                            onPressed: _isLoading ? null : (_isDutyActive ? _endDuty : _startDuty),
-                            style: ElevatedButton.styleFrom(
-                              minimumSize: const Size(double.infinity, 70),
-                              backgroundColor: _isDutyActive ? Colors.red : Colors.green,
-                              elevation: 4,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-                            child: _isLoading 
-                              ? const CircularProgressIndicator(color: Colors.white)
-                              : Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(_isDutyActive ? Icons.stop_circle : Icons.play_circle, color: Colors.white, size: 28),
-                                    const SizedBox(width: 12),
-                                    Text(
-                                      _isDutyActive ? 'END MY DUTY' : 'START MY DUTY',
-                                      style: const TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold),
-                                    ),
-                                  ],
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 30),
-                  
-                  // Assignment Information
-                  _buildSectionTitle('Route Information'),
+            child: Column(
+              children: [
+                Text(
+                  widget.driver.name, 
+                  style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 25),
+                
+                if (_permissionsVerified)
                   Container(
-                    margin: const EdgeInsets.only(top: 12, bottom: 25),
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(15),
                     decoration: BoxDecoration(
                       color: Colors.white, 
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.grey[200]!),
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10)]
                     ),
-                    child: Row(
-                      children: [
-                        _buildAssignmentInfo('ZONE', widget.driver.zone, Icons.location_city),
-                        Container(height: 40, width: 1, color: Colors.grey[200]),
-                        _buildAssignmentInfo('WARD', widget.driver.ward, Icons.map),
-                      ],
+                    child: QrImageView(
+                      data: "${widget.driver.id}|$_currentSessionId",
+                      version: QrVersions.auto,
+                      size: 200.0,
                     ),
                   ),
-                ],
+                
+                const SizedBox(height: 20),
+                const Text(
+                  'SHOW QR TO SUPERVISOR', 
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                ),
+              ],
+            ),
+          ),
+
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(30),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      _isTrackingActive ? Icons.verified_user : Icons.qr_code_scanner, 
+                      size: 80, 
+                      color: statusColor
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      _isTrackingActive ? 'TRACKING ACTIVE' : 'AWAITING APPROVAL',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: statusColor),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      _isTrackingActive 
+                        ? 'Vehicle tracking is live' 
+                        : 'Approval required to start',
+                      style: const TextStyle(color: Colors.grey, fontSize: 16),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey[800]),
-    );
-  }
-
-  Widget _buildHeaderStat(IconData icon, String value, String label, Color color) {
-    return Column(
-      children: [
-        Icon(icon, color: color, size: 28),
-        const SizedBox(height: 4),
-        Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
-        Text(label, style: TextStyle(color: color.withValues(alpha: 0.8), fontSize: 12, fontWeight: FontWeight.w500)),
-      ],
-    );
-  }
-
-  Widget _buildAssignmentInfo(String label, String value, IconData icon) {
-    return Expanded(
-      child: Column(
-        children: [
-          Icon(icon, color: Colors.green[600], size: 24),
-          const SizedBox(height: 8),
-          Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
-          const SizedBox(height: 2),
-          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
         ],
       ),
     );

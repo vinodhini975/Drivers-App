@@ -1,12 +1,7 @@
 plugins {
-    // Android & Kotlin
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-
-    // Flutter plugin must come after Android & Kotlin
     id("dev.flutter.flutter-gradle-plugin")
-
-    // Firebase services
     id("com.google.gms.google-services")
 }
 
@@ -21,8 +16,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
-
-        // Needed for background services + geolocator + multidex
         multiDexEnabled = true
     }
 
@@ -37,21 +30,20 @@ android {
 
     buildTypes {
         release {
-            // Use release signing config from debug for testing
             signingConfig = signingConfigs.getByName("debug")
-
-            // Enable code shrinking and obfuscation
-            isMinifyEnabled = false 
-            isShrinkResources = false 
-
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            
+            // TEMPORARY: Disable R8 for development/testing
+            // This fixes missing class errors like com.google.android.play.core.*
+            isMinifyEnabled = false   // Disables R8 code shrinking
+            isShrinkResources = false // Keeps all resources
+            
+            // Commented out ProGuard configuration for now
+            // proguardFiles(
+            //     getDefaultProguardFile("proguard-android-optimize.txt"),
+            //     "proguard-rules.pro"
+            // )
         }
-
         debug {
-            // Disable shrinking for debug build
             isMinifyEnabled = false
             isShrinkResources = false
         }
@@ -63,21 +55,10 @@ flutter {
 }
 
 dependencies {
-    // Firebase BoM — Match pubspec firebase versions
     implementation(platform("com.google.firebase:firebase-bom:32.7.3"))
-
-    // Firebase Analytics (correct artifact name)
     implementation("com.google.firebase:firebase-analytics-ktx")
-
-    // ADDED: Firestore dependency for native tracking service
     implementation("com.google.firebase:firebase-firestore-ktx")
-
-    // Required for multidex support
     implementation("androidx.multidex:multidex:2.0.1")
-    
-    // Add core library desugaring for newer Java APIs on older Android versions
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-    
-    // Google Play Services for location - use only the required parts
     implementation("com.google.android.gms:play-services-location:21.3.0")
 }

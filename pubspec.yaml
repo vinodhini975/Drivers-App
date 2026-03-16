@@ -33,14 +33,13 @@ dependencies:
   battery_plus: ^5.0.2
   connectivity_plus: ^5.0.2
 
-
-
-
-
-
   # ===== MAP =====
   google_maps_flutter: ^2.5.0
   flutter_polyline_points: ^2.0.1
+
+  # ===== QR CODE & SCANNER =====
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^3.5.0
 
   # ===== UI & Icons =====
   cupertino_icons: ^1.0.8
