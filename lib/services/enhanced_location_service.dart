@@ -8,6 +8,8 @@ import '../models/location_model.dart';
 import 'database_service.dart';
 import 'duty_service.dart';
 import 'auth_service.dart';
+import 'trip_service.dart';
+import 'route_processing_service.dart';
 
 class EnhancedLocationService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -16,6 +18,8 @@ class EnhancedLocationService {
   final DatabaseService _dbService = DatabaseService.instance;
   final DutyService _dutyService = DutyService();
   final AuthService _authService = AuthService();
+  final TripService _tripService = TripService();
+  final RouteProcessingService _routeProcessingService = RouteProcessingService();
 
   Future<bool> captureLocation(String driverId) async {
     // 1. Guard: Ensure driver ID is valid
@@ -46,6 +50,14 @@ class EnhancedLocationService {
         isSynced: false,
       );
 
+      // ════════════════════════════════════════════════════════════════════
+      // NEW: Feed location into route processing pipeline (fire-and-forget)
+      // ════════════════════════════════════════════════════════════════════
+      _feedToRouteProcessing(location, driverId);
+
+      // ════════════════════════════════════════════════════════════════════
+      // EXISTING: Live location sync (PRESERVED)
+      // ════════════════════════════════════════════════════════════════════
       final connectivityResult = await _connectivity.checkConnectivity();
       if (connectivityResult != ConnectivityResult.none) {
         try {
@@ -63,6 +75,24 @@ class EnhancedLocationService {
     } catch (e) {
       debugPrint('❌ Capture Error: $e');
       return false;
+    }
+  }
+
+  /// NEW: Feed captured location into the route processing pipeline.
+  void _feedToRouteProcessing(LocationModel location, String driverId) async {
+    try {
+      final activeTripId = await _tripService.getActiveTripId();
+      if (activeTripId == null) return; 
+
+      await _routeProcessingService.processLocation(
+        location: location,
+        tripId: activeTripId,
+        driverId: driverId,
+        wardId: driverId, 
+        routeId: null, 
+      );
+    } catch (e) {
+      debugPrint('⚠️ Route processing feed error (non-blocking): $e');
     }
   }
 
@@ -97,6 +127,9 @@ class EnhancedLocationService {
     try {
       final connectivityResult = await _connectivity.checkConnectivity();
       if (connectivityResult == ConnectivityResult.none) return 0;
+
+      // Sync offline route points
+      _routeProcessingService.syncOfflineRoutePoints();
 
       final unsynced = await _dbService.getUnsyncedLocations();
       if (unsynced.isEmpty) return 0;

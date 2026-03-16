@@ -7,6 +7,8 @@ import '../models/driver_model.dart';
 import '../services/auth_service.dart';
 import '../services/enhanced_location_service.dart';
 import '../services/native_location_service.dart';
+import '../services/trip_service.dart';
+import '../services/route_processing_service.dart';
 import 'login_screen.dart';
 import 'location_permission_screen.dart';
 import '../services/location_permission_service.dart';
@@ -22,6 +24,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AuthService _authService = AuthService();
   final EnhancedLocationService _locationService = EnhancedLocationService();
+  final TripService _tripService = TripService();
+  final RouteProcessingService _routeProcessingService = RouteProcessingService();
 
   StreamSubscription? _sentinelSubscription;
   StreamSubscription? _permissionSubscription;
@@ -80,13 +84,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_isTrackingActive) {
       await _triggerStopTracking();
     }
-    
     if (mounted) {
       setState(() {
         _permissionsVerified = false;
         _isTrackingActive = false;
       });
-      
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: widget.driver)),
@@ -126,7 +128,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _triggerStartTracking() async {
     if (mounted) setState(() => _isTrackingActive = true);
+    
+    // Start trip and route intelligence
+    try {
+      final trip = await _tripService.startTrip(
+        driverId: widget.driver.id,
+        truckId: widget.driver.vehicleId,
+        wardId: widget.driver.ward,
+        routeId: null,
+      );
+      _routeProcessingService.resetForNewTrip(trip.tripId);
+      debugPrint('🚀 Trip started via Remote Control: ${trip.tripId}');
+    } catch (e) {
+      debugPrint('⚠️ Trip start error (non-blocking): $e');
+    }
+
     await NativeLocationService.startTracking(widget.driver.id);
+    
+    // Fallback foreground timer for high reliability
     Timer.periodic(const Duration(seconds: 30), (timer) async {
       if (!_isTrackingActive) {
         timer.cancel();
@@ -138,6 +157,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _triggerStopTracking() async {
     if (mounted) setState(() => _isTrackingActive = false);
+    
+    // End trip
+    try {
+      final currentTripId = await _tripService.getActiveTripId();
+      if (currentTripId != null) {
+        await _tripService.completeTrip(currentTripId);
+        debugPrint('✅ Trip completed via Remote Control: $currentTripId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Trip completion error: $e');
+    }
+
     await NativeLocationService.stopTracking();
   }
 
@@ -162,6 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('Track Connect'),
         backgroundColor: Colors.green[700],
+        foregroundColor: Colors.white,
         elevation: 0,
         actions: [IconButton(icon: const Icon(Icons.logout), onPressed: _handleLogout)],
       ),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
+import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/gov_map_screen.dart';
@@ -10,7 +12,19 @@ import 'models/driver_model.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    if (kDebugMode) {
+      print("Firebase initialized successfully");
+    }
+  } catch (e) {
+    if (kDebugMode) {
+      print("Firebase initialization error: $e");
+    }
+  }
 
   final authService = AuthService();
   
