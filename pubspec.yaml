@@ -2,7 +2,7 @@ name: driver_app
 description: "Driver location tracking app for waste collection vehicles."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.10.4 <4.0.0"

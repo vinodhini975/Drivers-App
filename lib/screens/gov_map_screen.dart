@@ -64,7 +64,11 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
         .listen((snapshot) {
       if (!mounted) return;
       setState(() {
+        final bool isFirstLoad = _markers.isEmpty && snapshot.docs.isNotEmpty;
         _markers.clear();
+        _driverDataCache.clear();
+        _activeTripIds.clear();
+
         for (var doc in snapshot.docs) {
           final data = doc.data();
           final lat = (data['latitude'] as num?)?.toDouble();
@@ -83,12 +87,21 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
             _markers[doc.id] = Marker(
               markerId: MarkerId(doc.id),
               position: LatLng(lat, lng),
-              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-              onTap: () => _onDriverMarkerTapped(doc.id),
+              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+              infoWindow: InfoWindow(
+                title: data['vehicleId'],
+                snippet: 'Driver: ${data['name']}',
+                onTap: () => _onDriverMarkerTapped(doc.id),
+              ),
             );
 
             _fetchActiveTripId(doc.id);
           }
+        }
+        
+        // Auto-focus if this was the first time vehicles appeared
+        if (isFirstLoad) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _fitAllMarkers());
         }
       });
     }, onError: (error) {
@@ -347,6 +360,11 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
                   children: [
                     Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                     Text('Vehicle: $vehicleId', style: TextStyle(color: Colors.grey[600])),
+                    if (lastUpdate != null)
+                      Text(
+                        'Last seen: ${_formatTimestamp(lastUpdate)}',
+                        style: TextStyle(color: Colors.blue[800], fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
                   ],
                 ),
               ),
@@ -426,5 +444,18 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
   void _setMapStyle(GoogleMapController controller) {
     const style = '''[{"featureType":"poi","stylers":[{"visibility":"off"}]}]''';
     controller.setMapStyle(style);
+  }
+
+  String _formatTimestamp(dynamic timestamp) {
+    if (timestamp == null) return 'Never';
+    DateTime date;
+    if (timestamp is Timestamp) {
+      date = timestamp.toDate();
+    } else if (timestamp is DateTime) {
+      date = timestamp;
+    } else {
+      return 'Unknown';
+    }
+    return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}:${date.second.toString().padLeft(2, '0')}';
   }
 }

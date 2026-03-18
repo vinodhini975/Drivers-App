@@ -6,6 +6,9 @@ import 'gov_map_screen.dart';
 import 'register_screen.dart';
 import 'google_signup_complete_screen.dart';
 import 'home_screen.dart';
+import 'location_permission_screen.dart';
+
+import '../services/location_permission_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -39,7 +42,10 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _handleGetOtp() async {
     final mobile = _mobileController.text.trim();
     if (mobile.length < 10) {
-      _showMessage('Please enter a valid 10-digit mobile number', isError: true);
+      _showMessage(
+        'Please enter a valid 10-digit mobile number',
+        isError: true,
+      );
       return;
     }
 
@@ -74,19 +80,33 @@ class _LoginScreenState extends State<LoginScreen> {
 
       // Check if driver exists
       final driver = await _authService.getDriverByMobile(mobile);
-      
+
       if (!mounted) return;
 
       if (driver != null) {
         // Existing User - Login
         _showMessage('Welcome back, ${driver.name}!');
         await _authService.saveDriverSession(mobile, driverId: driver.id);
-        
+
         if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => HomeScreen(driver: driver)),
-        );
+
+        // Check permissions before proceeding to Home
+        final hasPerms =
+            await LocationPermissionService.areAllPermissionsGranted();
+
+        if (hasPerms) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => HomeScreen(driver: driver)),
+          );
+        } else {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => LocationPermissionScreen(driver: driver),
+            ),
+          );
+        }
       } else {
         // New User - Redirect to Register
         _showMessage('Mobile verified. Please complete your registration.');
@@ -112,9 +132,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (result['success']) {
         _showMessage(result['message']);
+        final driver = result['driver'] as DriverModel;
+
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => HomeScreen(driver: result['driver'] as DriverModel)),
+          MaterialPageRoute(
+            builder: (_) => LocationPermissionScreen(driver: driver),
+          ),
         );
       } else if (result['isNewUser'] == true) {
         Navigator.push(
@@ -143,7 +168,10 @@ class _LoginScreenState extends State<LoginScreen> {
     if (_govPasswordController.text == 'admin') {
       await _authService.saveGovSession();
       if (!mounted) return;
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const GovMapScreen()));
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const GovMapScreen()),
+      );
     } else {
       _showMessage('Invalid password', isError: true);
     }
@@ -157,9 +185,14 @@ class _LoginScreenState extends State<LoginScreen> {
       SnackBar(
         content: Row(
           children: [
-            Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
+            Icon(
+              isError ? Icons.error_outline : Icons.check_circle_outline,
+              color: Colors.white,
+            ),
             const SizedBox(width: 12),
-            Expanded(child: Text(message, style: const TextStyle(fontSize: 15))),
+            Expanded(
+              child: Text(message, style: const TextStyle(fontSize: 15)),
+            ),
           ],
         ),
         backgroundColor: isError ? Colors.red[700] : Colors.green[700],
@@ -172,7 +205,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final Color mainColor = _isDriverRole ? Colors.green[700]! : Colors.blue[900]!;
+    final Color mainColor = _isDriverRole
+        ? Colors.green[700]!
+        : Colors.blue[900]!;
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
@@ -185,7 +220,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 15),
                 Text(
                   _isDriverRole ? 'BBMP VEHICLE TRACKING' : 'GOVERNMENT ACCESS',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: mainColor),
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: mainColor,
+                  ),
                 ),
                 const SizedBox(height: 40),
 
@@ -199,10 +238,19 @@ class _LoginScreenState extends State<LoginScreen> {
                   borderRadius: BorderRadius.circular(12),
                   selectedColor: Colors.white,
                   fillColor: mainColor,
-                  constraints: BoxConstraints(minWidth: (MediaQuery.of(context).size.width - 60) / 2, minHeight: 60),
+                  constraints: BoxConstraints(
+                    minWidth: (MediaQuery.of(context).size.width - 60) / 2,
+                    minHeight: 60,
+                  ),
                   children: const [
-                    Text('DRIVER', style: TextStyle(fontWeight: FontWeight.bold)),
-                    Text('GOVERNMENT', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(
+                      'DRIVER',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      'GOVERNMENT',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 40),
@@ -244,48 +292,14 @@ class _LoginScreenState extends State<LoginScreen> {
           color,
         ),
         const SizedBox(height: 16),
-        
-        if (!_otpSent) ...[
-          OutlinedButton(
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 56),
-              side: BorderSide(color: color, width: 2),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            child: Text('Manual Registration', style: TextStyle(fontSize: 16, color: color, fontWeight: FontWeight.bold)),
-          ),
-          const SizedBox(height: 25),
-          Row(
-            children: [
-              Expanded(child: Divider(color: Colors.grey[400])),
-              Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text('OR', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold))),
-              Expanded(child: Divider(color: Colors.grey[400])),
-            ],
-          ),
-          const SizedBox(height: 25),
-          OutlinedButton.icon(
-            onPressed: _isLoading ? null : _loginWithGoogle,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 56),
-              side: BorderSide(color: Colors.grey[300]!, width: 1.5),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              backgroundColor: Colors.white,
-            ),
-            icon: Image.network(
-              'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
-              height: 24,
-              width: 24,
-              errorBuilder: (context, error, stackTrace) => Icon(Icons.g_mobiledata, color: Colors.red[700], size: 28),
-            ),
-            label: _isLoading
-                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('Continue with Google', style: TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w600)),
-          ),
-        ] else ...[
+
+        if (_otpSent) ...[
           TextButton(
             onPressed: () => setState(() => _otpSent = false),
-            child: Text('Change Mobile Number', style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+            child: Text(
+              'Change Mobile Number',
+              style: TextStyle(color: color, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ],
@@ -295,7 +309,12 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _govUI(Color color) {
     return Column(
       children: [
-        _buildTextField(_govPasswordController, 'GOVERNMENT PASSWORD', Icons.admin_panel_settings, isPassword: true),
+        _buildTextField(
+          _govPasswordController,
+          'GOVERNMENT PASSWORD',
+          Icons.admin_panel_settings,
+          isPassword: true,
+        ),
         const SizedBox(height: 30),
         _bigButton('GOVERNMENT LOGIN', _loginGovernment, color),
       ],
@@ -320,12 +339,15 @@ class _LoginScreenState extends State<LoginScreen> {
         labelText: label,
         hintText: hintText,
         prefixIcon: Icon(icon),
-        suffixIcon: isPassword 
-          ? IconButton(
-              icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off), 
-              onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-            ) 
-          : null,
+        suffixIcon: isPassword
+            ? IconButton(
+                icon: Icon(
+                  _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                ),
+                onPressed: () =>
+                    setState(() => _obscurePassword = !_obscurePassword),
+              )
+            : null,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
@@ -335,13 +357,20 @@ class _LoginScreenState extends State<LoginScreen> {
     return ElevatedButton(
       onPressed: _isLoading ? null : onTap,
       style: ElevatedButton.styleFrom(
-        backgroundColor: color, 
-        minimumSize: const Size(double.infinity, 64), 
+        backgroundColor: color,
+        minimumSize: const Size(double.infinity, 64),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       ),
-      child: _isLoading 
-        ? const CircularProgressIndicator(color: Colors.white) 
-        : Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
+      child: _isLoading
+          ? const CircularProgressIndicator(color: Colors.white)
+          : Text(
+              text,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
+            ),
     );
   }
 }

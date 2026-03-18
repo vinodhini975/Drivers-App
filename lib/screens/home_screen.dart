@@ -9,6 +9,7 @@ import '../services/enhanced_location_service.dart';
 import '../services/native_location_service.dart';
 import '../services/trip_service.dart';
 import '../services/route_processing_service.dart';
+import '../services/duty_service.dart';
 import 'login_screen.dart';
 import 'location_permission_screen.dart';
 import '../services/location_permission_service.dart';
@@ -26,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final EnhancedLocationService _locationService = EnhancedLocationService();
   final TripService _tripService = TripService();
   final RouteProcessingService _routeProcessingService = RouteProcessingService();
+  final DutyService _dutyService = DutyService();
 
   StreamSubscription? _sentinelSubscription;
   StreamSubscription? _permissionSubscription;
@@ -143,6 +145,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       debugPrint('⚠️ Trip start error (non-blocking): $e');
     }
 
+    // NEW: Force Duty state ON locally and on server
+    await _dutyService.startDuty(widget.driver.id);
+
+    // NEW: Capture location IMMEDIATELY so government portal sees us right away
+    await _locationService.captureLocation(widget.driver.id);
+
     await NativeLocationService.startTracking(widget.driver.id);
     
     // Fallback foreground timer for high reliability
@@ -168,6 +176,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('⚠️ Trip completion error: $e');
     }
+
+    // Force Duty state OFF
+    await _dutyService.endDuty(widget.driver.id);
 
     await NativeLocationService.stopTracking();
   }

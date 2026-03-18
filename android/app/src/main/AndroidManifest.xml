@@ -16,7 +16,7 @@
 
     <application
         android:name="androidx.multidex.MultiDexApplication"
-        android:label="Driver App"
+        android:label="TRACKCONNECT LIVE"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
 

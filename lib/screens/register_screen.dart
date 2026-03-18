@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../models/driver_model.dart';
 import 'home_screen.dart';
+import 'location_permission_screen.dart';
+
 
 class RegisterScreen extends StatefulWidget {
   final String? verifiedMobile;
@@ -83,7 +85,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(
-            builder: (context) => HomeScreen(driver: result['driver'] as DriverModel),
+            builder: (context) => LocationPermissionScreen(driver: result['driver'] as DriverModel),
           ),
           (route) => false,
         );
