@@ -16,9 +16,21 @@ class AuthService {
   static const String _emailKey = 'email'; // For backward compatibility/consistency with stashed work
   static const String _driverIdKey = 'driverId'; // For backward compatibility/consistency with stashed work
 
-  /* ================= OTP MECHANISM (UNCHANGED) ================= */
+  /* ================= OTP MECHANISM ================= */
+  Future<void> requestOtp(String mobile) async {
+    // In a real app, this would call Firebase Auth verifyPhoneNumber
+    // For now, we simulate sending an OTP
+    debugPrint('OTP requested for $mobile');
+  }
+
   Future<bool> verifyOtp(String otp) async {
-    return RegExp(r'^[0-9]{4,6}$').hasMatch(otp);
+    // Simulating OTP verification - any 6 digit number works for now
+    return RegExp(r'^[0-9]{6}$').hasMatch(otp);
+  }
+
+  Future<bool> checkDriverExists(String mobile) async {
+    final driver = await getDriverByMobile(mobile);
+    return driver != null;
   }
 
   /* ================= DRIVER SESSION ================= */

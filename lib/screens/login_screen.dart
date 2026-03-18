@@ -5,6 +5,7 @@ import 'location_permission_screen.dart';
 import 'gov_map_screen.dart';
 import 'register_screen.dart';
 import 'google_signup_complete_screen.dart';
+import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -14,55 +15,90 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _driverIdController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _mobileController = TextEditingController();
+  final TextEditingController _otpController = TextEditingController();
   final TextEditingController _govPasswordController = TextEditingController();
 
   final AuthService _authService = AuthService();
 
   bool _isDriverRole = true;
   bool _isLoading = false;
+  bool _otpSent = false;
   bool _obscurePassword = true;
 
   @override
   void dispose() {
-    _driverIdController.dispose();
-    _passwordController.dispose();
+    _mobileController.dispose();
+    _otpController.dispose();
     _govPasswordController.dispose();
     super.dispose();
   }
 
-  /* ================= DRIVER LOGIN ================= */
+  /* ================= DRIVER OTP LOGIN/SIGNUP ================= */
 
-  Future<void> _loginDriver() async {
-    final driverId = _driverIdController.text.trim().toUpperCase();
-    final password = _passwordController.text;
-
-    if (driverId.isEmpty || password.isEmpty) {
-      _showMessage('Please enter both Driver ID and password', isError: true);
+  Future<void> _handleGetOtp() async {
+    final mobile = _mobileController.text.trim();
+    if (mobile.length < 10) {
+      _showMessage('Please enter a valid 10-digit mobile number', isError: true);
       return;
     }
 
     setState(() => _isLoading = true);
-
     try {
-      final result = await _authService.signInWithDriverId(
-        driverId: driverId,
-        password: password,
-      );
+      await _authService.requestOtp(mobile);
+      setState(() => _otpSent = true);
+      _showMessage('OTP has been sent to $mobile');
+    } catch (e) {
+      _showMessage('Error sending OTP: $e', isError: true);
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
 
-      if (result['success']) {
-        _showMessage('Welcome ${result['driver'].name}!');
+  Future<void> _handleVerifyAndProceed() async {
+    final otp = _otpController.text.trim();
+    final mobile = _mobileController.text.trim();
+
+    if (otp.isEmpty) {
+      _showMessage('Please enter the OTP', isError: true);
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final isValid = await _authService.verifyOtp(otp);
+      if (!isValid) {
+        _showMessage('Invalid OTP. Please try again.', isError: true);
+        return;
+      }
+
+      // Check if driver exists
+      final driver = await _authService.getDriverByMobile(mobile);
+      
+      if (!mounted) return;
+
+      if (driver != null) {
+        // Existing User - Login
+        _showMessage('Welcome back, ${driver.name}!');
+        await _authService.saveDriverSession(mobile, driverId: driver.id);
+        
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: result['driver'] as DriverModel)),
+          MaterialPageRoute(builder: (_) => HomeScreen(driver: driver)),
         );
       } else {
-        _showMessage(result['message'] ?? 'Login failed', isError: true);
+        // New User - Redirect to Register
+        _showMessage('Mobile verified. Please complete your registration.');
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => RegisterScreen(verifiedMobile: mobile),
+          ),
+        );
       }
     } catch (e) {
-      _showMessage('Login error: $e', isError: true);
+      _showMessage('Verification failed: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -78,7 +114,7 @@ class _LoginScreenState extends State<LoginScreen> {
         _showMessage(result['message']);
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => LocationPermissionScreen(driver: result['driver'] as DriverModel)),
+          MaterialPageRoute(builder: (_) => HomeScreen(driver: result['driver'] as DriverModel)),
         );
       } else if (result['isNewUser'] == true) {
         Navigator.push(
@@ -156,7 +192,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 // Role Selector
                 ToggleButtons(
                   isSelected: [_isDriverRole, !_isDriverRole],
-                  onPressed: (index) => setState(() => _isDriverRole = index == 0),
+                  onPressed: (index) => setState(() {
+                    _isDriverRole = index == 0;
+                    _otpSent = false;
+                  }),
                   borderRadius: BorderRadius.circular(12),
                   selectedColor: Colors.white,
                   fillColor: mainColor,
@@ -180,51 +219,75 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _driverUI(Color color) {
     return Column(
       children: [
-        _buildTextField(_driverIdController, 'DRIVER ID', Icons.badge, hintText: 'e.g. DRV001'),
-        const SizedBox(height: 16),
-        _buildTextField(_passwordController, 'PASSWORD', Icons.lock, isPassword: true),
+        _buildTextField(
+          _mobileController,
+          'MOBILE NUMBER',
+          Icons.phone_android,
+          hintText: 'Enter 10-digit number',
+          keyboardType: TextInputType.phone,
+          enabled: !_otpSent && !_isLoading,
+        ),
+        if (_otpSent) ...[
+          const SizedBox(height: 16),
+          _buildTextField(
+            _otpController,
+            'ENTER OTP',
+            Icons.vpn_key,
+            hintText: '6-digit OTP',
+            keyboardType: TextInputType.number,
+          ),
+        ],
         const SizedBox(height: 30),
-        _bigButton('DRIVER LOGIN', _loginDriver, color),
+        _bigButton(
+          _otpSent ? 'VERIFY & PROCEED' : 'GET OTP',
+          _otpSent ? _handleVerifyAndProceed : _handleGetOtp,
+          color,
+        ),
         const SizedBox(height: 16),
         
-        OutlinedButton(
-          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(double.infinity, 56),
-            side: BorderSide(color: color, width: 2),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        if (!_otpSent) ...[
+          OutlinedButton(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 56),
+              side: BorderSide(color: color, width: 2),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: Text('Manual Registration', style: TextStyle(fontSize: 16, color: color, fontWeight: FontWeight.bold)),
           ),
-          child: Text('New User? Register Here', style: TextStyle(fontSize: 16, color: color, fontWeight: FontWeight.bold)),
-        ),
-        
-        const SizedBox(height: 25),
-        Row(
-          children: [
-            Expanded(child: Divider(color: Colors.grey[400])),
-            Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text('OR', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold))),
-            Expanded(child: Divider(color: Colors.grey[400])),
-          ],
-        ),
-        const SizedBox(height: 25),
-
-        OutlinedButton.icon(
-          onPressed: _isLoading ? null : _loginWithGoogle,
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(double.infinity, 56),
-            side: BorderSide(color: Colors.grey[300]!, width: 1.5),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            backgroundColor: Colors.white,
+          const SizedBox(height: 25),
+          Row(
+            children: [
+              Expanded(child: Divider(color: Colors.grey[400])),
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text('OR', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold))),
+              Expanded(child: Divider(color: Colors.grey[400])),
+            ],
           ),
-          icon: Image.network(
-            'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
-            height: 24,
-            width: 24,
-            errorBuilder: (context, error, stackTrace) => Icon(Icons.g_mobiledata, color: Colors.red[700], size: 28),
+          const SizedBox(height: 25),
+          OutlinedButton.icon(
+            onPressed: _isLoading ? null : _loginWithGoogle,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 56),
+              side: BorderSide(color: Colors.grey[300]!, width: 1.5),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              backgroundColor: Colors.white,
+            ),
+            icon: Image.network(
+              'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
+              height: 24,
+              width: 24,
+              errorBuilder: (context, error, stackTrace) => Icon(Icons.g_mobiledata, color: Colors.red[700], size: 28),
+            ),
+            label: _isLoading
+                ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Text('Continue with Google', style: TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w600)),
           ),
-          label: _isLoading
-              ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Continue with Google', style: TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w600)),
-        ),
+        ] else ...[
+          TextButton(
+            onPressed: () => setState(() => _otpSent = false),
+            child: Text('Change Mobile Number', style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+          ),
+        ],
       ],
     );
   }
@@ -239,10 +302,20 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isPassword = false, String? hintText}) {
+  Widget _buildTextField(
+    TextEditingController controller,
+    String label,
+    IconData icon, {
+    bool isPassword = false,
+    String? hintText,
+    TextInputType keyboardType = TextInputType.text,
+    bool enabled = true,
+  }) {
     return TextField(
       controller: controller,
       obscureText: isPassword && _obscurePassword,
+      keyboardType: keyboardType,
+      enabled: enabled,
       decoration: InputDecoration(
         labelText: label,
         hintText: hintText,
@@ -266,7 +339,9 @@ class _LoginScreenState extends State<LoginScreen> {
         minimumSize: const Size(double.infinity, 64), 
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
       ),
-      child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
+      child: _isLoading 
+        ? const CircularProgressIndicator(color: Colors.white) 
+        : Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white)),
     );
   }
 }

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/driver_model.dart';
-import '../services/auth_service.dart';
 import '../services/permission_edge_case_handler.dart';
 import 'home_screen.dart';
 
@@ -33,6 +32,8 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen> {
     try {
       final result = await PermissionEdgeCaseHandler.handleAllEdgeCases();
       
+      if (!mounted) return;
+
       switch (result.action) {
         case PermissionAction.PROCEED:
           setState(() {
@@ -67,9 +68,11 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen> {
           break;
       }
     } catch (e) {
-      setState(() {
-        _isCheckingPermissions = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isCheckingPermissions = false;
+        });
+      }
     }
   }
 
@@ -78,7 +81,7 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen> {
 
     try {
       var status = await Permission.location.request();
-      if (status.isGranted) {
+      if (status.isGranted || status.isLimited) {
         var bgStatus = await Permission.locationAlways.request();
         if (bgStatus.isGranted) {
           if (await Geolocator.isLocationServiceEnabled()) {

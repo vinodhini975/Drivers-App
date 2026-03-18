@@ -4,7 +4,8 @@ import '../models/driver_model.dart';
 import 'home_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  final String? verifiedMobile;
+  const RegisterScreen({super.key, this.verifiedMobile});
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -18,16 +19,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _passwordController = TextEditingController(); // Hidden for OTP flow
   final _confirmPasswordController = TextEditingController();
   final _vehicleIdController = TextEditingController();
   final _licenseController = TextEditingController();
-  final _zoneController = TextEditingController();
-  final _wardController = TextEditingController();
   
   bool _isLoading = false;
-  bool _obscurePassword = true;
-  bool _obscureConfirmPassword = true;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.verifiedMobile != null) {
+      _phoneController.text = widget.verifiedMobile!;
+    }
+  }
 
   @override
   void dispose() {
@@ -39,8 +44,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _confirmPasswordController.dispose();
     _vehicleIdController.dispose();
     _licenseController.dispose();
-    _zoneController.dispose();
-    _wardController.dispose();
     super.dispose();
   }
 
@@ -49,24 +52,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
 
-    if (_passwordController.text != _confirmPasswordController.text) {
-      _showMessage('Passwords do not match', isError: true);
-      return;
-    }
-
     setState(() => _isLoading = true);
     
     try {
+      // If we are in OTP flow, we don't necessarily need a password for Firebase Auth
+      // but for consistency with the existing registerDriver service, we'll provide a dummy one if empty
+      // or we can update the service. For now, let's use a default if not provided.
+      final password = _passwordController.text.isNotEmpty 
+          ? _passwordController.text 
+          : "OTP_USER_${DateTime.now().millisecondsSinceEpoch}";
+
       final result = await _authService.registerDriver(
         driverId: _driverIdController.text.trim().toUpperCase(),
         name: _nameController.text.trim(),
         email: _emailController.text.trim(),
-        password: _passwordController.text,
+        password: password,
         phoneNumber: _phoneController.text.trim(),
         vehicleId: _vehicleIdController.text.trim().toUpperCase(),
         licenseNumber: _licenseController.text.trim().toUpperCase(),
-        zone: 'Default Zone', // Auto-assign default zone
-        ward: 'Default Ward', // Auto-assign default ward
+        zone: 'Default Zone', 
+        ward: 'Default Ward',
       );
 
       if (!mounted) return;
@@ -75,11 +80,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _showMessage(result['message'], isError: false);
         await Future.delayed(const Duration(seconds: 1));
         if (!mounted) return;
-        Navigator.pushReplacement(
+        Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(
             builder: (context) => HomeScreen(driver: result['driver'] as DriverModel),
           ),
+          (route) => false,
         );
       } else {
         _showMessage(result['message'], isError: true);
@@ -100,17 +106,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
       SnackBar(
         content: Row(
           children: [
-            Icon(
-              isError ? Icons.error_outline : Icons.check_circle_outline,
-              color: Colors.white,
-            ),
+            Icon(isError ? Icons.error_outline : Icons.check_circle_outline, color: Colors.white),
             const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(fontSize: 15),
-              ),
-            ),
+            Expanded(child: Text(message, style: const TextStyle(fontSize: 15))),
           ],
         ),
         backgroundColor: isError ? Colors.red[700] : Colors.green[700],
@@ -123,10 +121,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    bool isViaOtp = widget.verifiedMobile != null;
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text('Register New Driver'),
+        title: Text(isViaOtp ? 'Complete Profile' : 'Register New Driver'),
         backgroundColor: Colors.green[700],
         foregroundColor: Colors.white,
       ),
@@ -139,13 +139,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Icon(
-                  Icons.person_add,
+                  isViaOtp ? Icons.how_to_reg : Icons.person_add,
                   size: 60,
                   color: Colors.green[700],
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'Create Your Account',
+                  isViaOtp ? 'Almost there!' : 'Create Your Account',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 24,
@@ -155,7 +155,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Fill in your details to get started',
+                  isViaOtp ? 'Finish setting up your driver details' : 'Fill in your details to get started',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -164,43 +164,44 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ),
                 const SizedBox(height: 32),
                 
-                // Driver ID
                 _buildTextField(
                   controller: _driverIdController,
                   label: 'Driver ID',
                   hint: 'e.g., DRV001',
                   icon: Icons.badge,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Driver ID is required';
-                    }
-                    if (!RegExp(r'^[A-Z]{3}\d{3}$').hasMatch(value.toUpperCase())) {
-                      return 'Format: 3 letters + 3 numbers (e.g., DRV001)';
-                    }
+                    if (value == null || value.isEmpty) return 'Driver ID is required';
                     return null;
                   },
                 ),
                 const SizedBox(height: 16),
                 
-                // Full Name
                 _buildTextField(
                   controller: _nameController,
                   label: 'Full Name',
                   hint: 'John Doe',
                   icon: Icons.person,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Name is required';
-                    }
-                    if (value.length < 3) {
-                      return 'Name must be at least 3 characters';
-                    }
+                    if (value == null || value.isEmpty) return 'Name is required';
                     return null;
                   },
                 ),
                 const SizedBox(height: 16),
                 
-                // Email
+                _buildTextField(
+                  controller: _phoneController,
+                  label: 'Phone Number',
+                  hint: '10-digit number',
+                  icon: Icons.phone,
+                  keyboardType: TextInputType.phone,
+                  enabled: !isViaOtp, // Disable if coming from OTP verification
+                  validator: (value) {
+                    if (value == null || value.isEmpty) return 'Phone number is required';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
                 _buildTextField(
                   controller: _emailController,
                   label: 'Email Address',
@@ -208,135 +209,65 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   icon: Icons.email,
                   keyboardType: TextInputType.emailAddress,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Email is required';
-                    }
-                    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
-                      return 'Enter a valid email address';
-                    }
+                    if (value == null || value.isEmpty) return 'Email is required';
                     return null;
                   },
                 ),
                 const SizedBox(height: 16),
                 
-                // Phone Number
-                _buildTextField(
-                  controller: _phoneController,
-                  label: 'Phone Number',
-                  hint: '+1234567890',
-                  icon: Icons.phone,
-                  keyboardType: TextInputType.phone,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Phone number is required';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                // Vehicle ID
                 _buildTextField(
                   controller: _vehicleIdController,
                   label: 'Vehicle ID',
                   hint: 'VEH-001',
                   icon: Icons.local_shipping,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Vehicle ID is required';
-                    }
+                    if (value == null || value.isEmpty) return 'Vehicle ID is required';
                     return null;
                   },
                 ),
                 const SizedBox(height: 16),
                 
-                // License Number
                 _buildTextField(
                   controller: _licenseController,
                   label: 'License Number',
                   hint: 'DL123456',
                   icon: Icons.credit_card,
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'License number is required';
-                    }
+                    if (value == null || value.isEmpty) return 'License number is required';
                     return null;
                   },
                 ),
                 const SizedBox(height: 16),
+
+                if (!isViaOtp) ...[
+                   _buildTextField(
+                    controller: _passwordController,
+                    label: 'Password',
+                    hint: 'At least 6 characters',
+                    icon: Icons.lock,
+                    isPassword: true,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) return 'Password is required';
+                      if (value.length < 6) return 'At least 6 characters';
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 32),
+                ],
                 
-                // Password
-                _buildTextField(
-                  controller: _passwordController,
-                  label: 'Password',
-                  hint: 'At least 6 characters',
-                  icon: Icons.lock,
-                  isPassword: true,
-                  obscureText: _obscurePassword,
-                  onToggleVisibility: () => setState(() => _obscurePassword = !_obscurePassword),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Password is required';
-                    }
-                    if (value.length < 6) {
-                      return 'Password must be at least 6 characters';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                // Confirm Password
-                _buildTextField(
-                  controller: _confirmPasswordController,
-                  label: 'Confirm Password',
-                  hint: 'Re-enter your password',
-                  icon: Icons.lock_outline,
-                  isPassword: true,
-                  obscureText: _obscureConfirmPassword,
-                  onToggleVisibility: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please confirm your password';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 32),
-                
-                // Register Button
                 ElevatedButton(
                   onPressed: _isLoading ? null : _register,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green[700],
                     minimumSize: const Size(double.infinity, 60),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text(
-                          'Register',
-                          style: TextStyle(
-                            fontSize: 18,
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
+                      : Text(
+                          isViaOtp ? 'COMPLETE REGISTRATION' : 'REGISTER',
+                          style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold),
                         ),
-                ),
-                const SizedBox(height: 16),
-                
-                // Back to Login
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    'Already have an account? Login',
-                    style: TextStyle(
-                      color: Colors.green[700],
-                      fontSize: 14,
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -351,33 +282,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
     required String label,
     required String hint,
     required IconData icon,
+    bool enabled = true,
+    bool isPassword = false,
     String? Function(String?)? validator,
     TextInputType keyboardType = TextInputType.text,
-    bool isPassword = false,
-    bool obscureText = false,
-    VoidCallback? onToggleVisibility,
   }) {
     return TextFormField(
       controller: controller,
-      obscureText: obscureText,
+      enabled: enabled,
+      obscureText: isPassword,
       keyboardType: keyboardType,
-      textCapitalization: isPassword ? TextCapitalization.none : TextCapitalization.words,
       validator: validator,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
         prefixIcon: Icon(icon),
-        suffixIcon: isPassword
-            ? IconButton(
-                icon: Icon(obscureText ? Icons.visibility : Icons.visibility_off),
-                onPressed: onToggleVisibility,
-              )
-            : null,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.green[700]!, width: 2),
-        ),
+        filled: !enabled,
+        fillColor: !enabled ? Colors.grey[100] : null,
       ),
     );
   }

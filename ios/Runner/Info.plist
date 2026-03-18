@@ -8,6 +8,11 @@
     <string>Your live location helps us optimize waste management operations.</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>Required to track driver location continuously.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>location</string>
+        <string>remote-notification</string>
+    </array>
 
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
