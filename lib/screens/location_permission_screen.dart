@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:geolocator/geolocator.dart';
 import '../models/driver_model.dart';
+import '../services/auth_service.dart';
+import '../services/permission_edge_case_handler.dart';
 import 'home_screen.dart';
 
 class LocationPermissionScreen extends StatefulWidget {
@@ -12,33 +15,138 @@ class LocationPermissionScreen extends StatefulWidget {
 }
 
 class _LocationPermissionScreenState extends State<LocationPermissionScreen> {
-  static const _platform = MethodChannel('location_permission');
-  bool _isProcessing = false;
+  bool _isCheckingPermissions = false;
+  bool _permissionsGranted = false;
+  String _instructionMessage = 'Grant location access to continue';
 
-  Future<void> _handleLocationAccess() async {
-    setState(() => _isProcessing = true);
+  @override
+  void initState() {
+    super.initState();
+    _handleEdgeCasesOnInit();
+  }
+
+  Future<void> _handleEdgeCasesOnInit() async {
+    setState(() {
+      _isCheckingPermissions = true;
+    });
 
     try {
-      // ONE BUTTON HANDSHAKE: Requests permissions + Enables GPS
-      final String result = await _platform.invokeMethod('requestLocationAndEnableGPS');
+      final result = await PermissionEdgeCaseHandler.handleAllEdgeCases();
       
-      if (result == 'SUCCESS') {
-        _navigateToHome();
-      } else {
-        _showErrorMessage('Location access is required to continue. Please try again.');
+      switch (result.action) {
+        case PermissionAction.PROCEED:
+          setState(() {
+            _permissionsGranted = true;
+            _isCheckingPermissions = false;
+          });
+          _navigateToHome();
+          break;
+          
+        case PermissionAction.REDIRECT_TO_PERMISSION_SCREEN:
+        case PermissionAction.REDIRECT_TO_GPS_SETTINGS:
+          setState(() {
+            _permissionsGranted = false;
+            _instructionMessage = result.reason;
+            _isCheckingPermissions = false;
+          });
+          break;
+          
+        case PermissionAction.REDIRECT_TO_APP_SETTINGS:
+          _handlePermanentlyDenied();
+          break;
+          
+        case PermissionAction.SHOW_WARNING:
+          _showWarningDialog(result.reason);
+          break;
+          
+        case PermissionAction.SHOW_ERROR:
+          setState(() {
+            _instructionMessage = result.reason;
+            _isCheckingPermissions = false;
+          });
+          break;
       }
-    } on PlatformException catch (e) {
-      debugPrint('Native error: ${e.message}');
-      _showErrorMessage('An unexpected error occurred. Please check your GPS settings.');
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
+    } catch (e) {
+      setState(() {
+        _isCheckingPermissions = false;
+      });
     }
   }
 
-  void _showErrorMessage(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.red),
+  Future<void> _requestAllPermissions() async {
+    setState(() => _isCheckingPermissions = true);
+
+    try {
+      var status = await Permission.location.request();
+      if (status.isGranted) {
+        var bgStatus = await Permission.locationAlways.request();
+        if (bgStatus.isGranted) {
+          if (await Geolocator.isLocationServiceEnabled()) {
+            _navigateToHome();
+            return;
+          } else {
+            _showGpsDialog();
+          }
+        }
+      }
+      
+      if (status.isPermanentlyDenied) {
+        _handlePermanentlyDenied();
+      }
+    } finally {
+      if (mounted) setState(() => _isCheckingPermissions = false);
+    }
+  }
+
+  void _handlePermanentlyDenied() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Settings Required'),
+        content: const Text('Location access is mandatory. Please enable "Allow all the time" in App Settings.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('OPEN SETTINGS'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showGpsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('GPS Disabled'),
+        content: const Text('Please enable GPS in your device settings to start tracking.'),
+        actions: [
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await Geolocator.openLocationSettings();
+            },
+            child: const Text('ENABLE GPS'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showWarningDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Notice'),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+        ],
+      ),
     );
   }
 
@@ -56,41 +164,46 @@ class _LocationPermissionScreenState extends State<LocationPermissionScreen> {
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(32.0),
+          padding: const EdgeInsets.symmetric(horizontal: 32.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.location_on_rounded, size: 100, color: Colors.red),
+              const Spacer(),
+              Icon(
+                Icons.location_on_rounded,
+                size: 100,
+                color: _permissionsGranted ? Colors.green : Colors.redAccent,
+              ),
               const SizedBox(height: 40),
               const Text(
-                'Location Permission Required',
+                'Location Required',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 20),
-              const Text(
-                'TrackConnect requires location access to monitor vehicle movement and sync duty records correctly.',
+              Text(
+                _instructionMessage,
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, color: Colors.grey, height: 1.5),
+                style: const TextStyle(fontSize: 16, color: Colors.grey, height: 1.5),
               ),
               const Spacer(),
-              if (_isProcessing)
+              if (_isCheckingPermissions)
                 const CircularProgressIndicator()
-              else
+              else if (!_permissionsGranted)
                 ElevatedButton(
-                  onPressed: _handleLocationAccess,
+                  onPressed: _requestAllPermissions,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[700],
+                    backgroundColor: Colors.redAccent,
                     minimumSize: const Size(double.infinity, 65),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                     elevation: 0,
                   ),
                   child: const Text(
-                    'ALLOW LOCATION ACCESS',
+                    'ALLOW ACCESS',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
                   ),
                 ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 40),
             ],
           ),
         ),
