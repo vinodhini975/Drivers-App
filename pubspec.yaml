@@ -2,7 +2,7 @@ name: driver_app
 description: "Driver location tracking app for waste collection vehicles."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.10.4 <4.0.0"
@@ -18,6 +18,7 @@ dependencies:
   firebase_core: ^3.5.0
   cloud_firestore: ^5.5.0
   firebase_auth: ^5.3.0
+  google_sign_in: ^6.2.1
 
   # ===== LOCATION + PERMISSIONS =====
   geolocator: ^12.0.0
@@ -39,7 +40,7 @@ dependencies:
 
   # ===== QR CODE & SCANNER =====
   qr_flutter: ^4.1.0
-  mobile_scanner: ^3.5.0
+  mobile_scanner: ^7.2.0
 
   # ===== UI & Icons =====
   cupertino_icons: ^1.0.8

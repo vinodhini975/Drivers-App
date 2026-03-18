@@ -19,3 +19,8 @@
 -keep class io.flutter.plugin.common.MethodChannel { *; }
 -keep class io.flutter.plugin.common.MethodChannel$MethodCallHandler { *; }
 -keep class io.flutter.plugin.common.MethodChannel$Result { *; }
+# Flutter deferred component manager (fixes missing play core errors)
+-dontwarn com.google.android.play.core.**
+-keep class com.google.android.play.core.** { *; }
+-dontwarn com.google.android.gms.**
+-dontnote com.google.android.gms.**

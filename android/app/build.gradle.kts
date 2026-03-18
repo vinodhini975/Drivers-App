@@ -32,16 +32,14 @@ android {
         release {
             signingConfig = signingConfigs.getByName("debug")
             
-            // TEMPORARY: Disable R8 for development/testing
-            // This fixes missing class errors like com.google.android.play.core.*
-            isMinifyEnabled = false   // Disables R8 code shrinking
-            isShrinkResources = false // Keeps all resources
+            // Re-enabled R8 for production size reduction
+            isMinifyEnabled = true
+            isShrinkResources = true
             
-            // Commented out ProGuard configuration for now
-            // proguardFiles(
-            //     getDefaultProguardFile("proguard-android-optimize.txt"),
-            //     "proguard-rules.pro"
-            // )
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
         debug {
             isMinifyEnabled = false
