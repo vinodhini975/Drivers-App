@@ -1,25 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geocoding/geocoding.dart';
+import 'dart:async';
 import '../../models/trip_model.dart';
 import '../../models/route_point_model.dart';
 import '../../enums/route_point_type.dart';
 
-/// Admin screen to view a driver's trip route history.
-///
-/// Displays:
-/// - Google Map with full polyline from all ordered route points
-/// - Red markers for validated STOP points
-/// - Green marker for trip start
-/// - Blue marker for trip end
-/// - Bottom card with trip summary (driver, truck, times, stops, adherence)
-///
-/// Usage:
-/// ```dart
-/// Navigator.push(context, MaterialPageRoute(
-///   builder: (_) => RouteHistoryScreen(tripId: 'some-trip-id'),
-/// ));
-/// ```
 class RouteHistoryScreen extends StatefulWidget {
   final String tripId;
 
@@ -30,251 +17,120 @@ class RouteHistoryScreen extends StatefulWidget {
 }
 
 class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  TripModel? _trip;
-  List<RoutePointModel> _points = [];
-  bool _isLoading = true;
-  String? _errorMessage;
-
-  final Set<Polyline> _polylines = {};
-  final Set<Marker> _markers = {};
-
   GoogleMapController? _mapController;
+  TripModel? _trip;
+  final List<RoutePointModel> _points = [];
+  bool _isLoading = true;
+  String _startAddress = "Loading start location...";
+  String _endAddress = "Loading end location...";
+  StreamSubscription? _liveSubscription;
+  LatLng? _livePosition;
 
   @override
   void initState() {
     super.initState();
-    _fetchData();
+    _fetchTripData();
+    _startLiveListener();
   }
 
   @override
   void dispose() {
+    _liveSubscription?.cancel();
     _mapController?.dispose();
     super.dispose();
   }
 
-  Future<void> _fetchData() async {
-    try {
-      // Fetch trip metadata
-      final tripDoc =
-          await _firestore.collection('trips').doc(widget.tripId).get();
+  void _startLiveListener() {
+    FirebaseFirestore.instance
+        .collection('trips')
+        .doc(widget.tripId)
+        .snapshots()
+        .listen((tripDoc) {
+      if (tripDoc.exists && mounted) {
+        final driverId = tripDoc.data()?['driverId'];
+        if (driverId != null) {
+          _liveSubscription?.cancel();
+          _liveSubscription = FirebaseFirestore.instance
+              .collection('drivers')
+              .doc(driverId)
+              .snapshots()
+              .listen((driverDoc) {
+            if (driverDoc.exists && mounted) {
+              final data = driverDoc.data()!;
+              if (data['latitude'] != null && data['longitude'] != null) {
+                setState(() {
+                  _livePosition = LatLng(
+                    (data['latitude'] as num).toDouble(),
+                    (data['longitude'] as num).toDouble(),
+                  );
+                });
+              }
+            }
+          });
+        }
+      }
+    });
+  }
 
+  Future<void> _fetchTripData() async {
+    try {
+      final tripDoc = await FirebaseFirestore.instance
+          .collection('trips')
+          .doc(widget.tripId)
+          .get();
+      
       if (!tripDoc.exists) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = 'Trip not found: ${widget.tripId}';
-        });
+        setState(() => _isLoading = false);
         return;
       }
 
-      _trip = TripModel.fromMap(tripDoc.data()!, tripDoc.id);
-
-      // Fetch route points ordered by timestamp
-      final pointsSnapshot = await _firestore
+      final pointsSnap = await FirebaseFirestore.instance
           .collection('trips')
           .doc(widget.tripId)
           .collection('routePoints')
           .orderBy('timestamp', descending: false)
           .get();
 
-      _points = pointsSnapshot.docs
-          .map((doc) => RoutePointModel.fromMap(doc.data(), doc.id))
-          .toList();
+      if (mounted) {
+        setState(() {
+          _trip = TripModel.fromMap(tripDoc.data()!, tripDoc.id);
+          _points.clear();
+          for (var doc in pointsSnap.docs) {
+            _points.add(RoutePointModel.fromMap(doc.data(), doc.id));
+          }
+          _isLoading = false;
+        });
+      }
 
-      _buildMapData();
+      if (_points.isNotEmpty) {
+        _fitBounds();
+        _geocodeStartPoint();
+        _geocodeEndPoint();
+      }
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = 'Error loading trip: $e';
-      });
+      debugPrint('Error fetching history: $e');
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _buildMapData() {
-    _polylines.clear();
-    _markers.clear();
-
-    if (_points.isEmpty) {
-      setState(() => _isLoading = false);
-      return;
-    }
-
-    // ── Build polyline from ALL route points (both checkpoints & stops) ──
-    final polylineCoords =
-        _points.map((p) => LatLng(p.lat, p.lng)).toList();
-
-    _polylines.add(Polyline(
-      polylineId: const PolylineId('route_polyline'),
-      color: Colors.blue.shade700,
-      width: 4,
-      points: polylineCoords,
-      patterns: const [], // solid line
-    ));
-
-    // ── Start marker (green) ─────────────────────────────────────────────
-    _markers.add(Marker(
-      markerId: const MarkerId('start'),
-      position: polylineCoords.first,
-      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-      infoWindow: InfoWindow(
-        title: 'Start',
-        snippet: _formatTime(_points.first.timestamp),
-      ),
-    ));
-
-    // ── End marker (blue) ────────────────────────────────────────────────
-    _markers.add(Marker(
-      markerId: const MarkerId('end'),
-      position: polylineCoords.last,
-      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      infoWindow: InfoWindow(
-        title: 'End',
-        snippet: _formatTime(_points.last.timestamp),
-      ),
-    ));
-
-    // ── Stop markers (red) ───────────────────────────────────────────────
-    final stops =
-        _points.where((p) => p.type == RoutePointType.stop).toList();
-    for (int i = 0; i < stops.length; i++) {
-      final stop = stops[i];
-      _markers.add(Marker(
-        markerId: MarkerId('stop_$i'),
-        position: LatLng(stop.lat, stop.lng),
-        icon:
-            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(
-          title: 'Stop #${i + 1}',
-          snippet: 'Duration: ${stop.stopDurationSec}s | ${_formatTime(stop.timestamp)}',
-        ),
-      ));
-    }
-
-    setState(() => _isLoading = false);
+  Future<void> _geocodeStartPoint() async {
+    try {
+      List<Placemark> p = await placemarkFromCoordinates(_points.first.lat, _points.first.lng);
+      if (p.isNotEmpty && mounted) setState(() => _startAddress = "${p.first.street}, ${p.first.subLocality}");
+    } catch (_) { if (mounted) setState(() => _startAddress = "Area not found"); }
   }
 
-  String _formatTime(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m';
+  Future<void> _geocodeEndPoint() async {
+    try {
+      List<Placemark> p = await placemarkFromCoordinates(_points.last.lat, _points.last.lng);
+      if (p.isNotEmpty && mounted) setState(() => _endAddress = "${p.first.street}, ${p.first.subLocality}");
+    } catch (_) { if (mounted) setState(() => _endAddress = "Area not found"); }
   }
 
-  String _formatDuration(DateTime start, DateTime? end) {
-    if (end == null) return 'Ongoing';
-    final diff = end.difference(start);
-    final hours = diff.inHours;
-    final minutes = diff.inMinutes.remainder(60);
-    if (hours > 0) return '${hours}h ${minutes}m';
-    return '${minutes}m';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Route History',
-            style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.blue[900],
-        foregroundColor: Colors.white,
-        elevation: 0,
-      ),
-      body: _buildBody(),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Loading route data...'),
-          ],
-        ),
-      );
-    }
-
-    if (_errorMessage != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline, size: 64, color: Colors.red[300]),
-              const SizedBox(height: 16),
-              Text(_errorMessage!,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16, color: Colors.grey[700])),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () {
-                  setState(() {
-                    _isLoading = true;
-                    _errorMessage = null;
-                  });
-                  _fetchData();
-                },
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (_points.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.route, size: 64, color: Colors.grey[400]),
-            const SizedBox(height: 16),
-            Text('No route points recorded for this trip',
-                style: TextStyle(fontSize: 16, color: Colors.grey[600])),
-          ],
-        ),
-      );
-    }
-
-    return Stack(
-      children: [
-        // ── Google Map ─────────────────────────────────────────────────
-        GoogleMap(
-          initialCameraPosition: CameraPosition(
-            target: LatLng(_points.first.lat, _points.first.lng),
-            zoom: 14,
-          ),
-          polylines: _polylines,
-          markers: _markers,
-          myLocationEnabled: false,
-          myLocationButtonEnabled: false,
-          zoomControlsEnabled: true,
-          mapType: MapType.normal,
-          onMapCreated: (controller) {
-            _mapController = controller;
-            // Fit map to show entire route
-            _fitMapToRoute();
-          },
-        ),
-
-        // ── Bottom Trip Summary Card ───────────────────────────────────
-        if (_trip != null) _buildTripSummaryCard(),
-      ],
-    );
-  }
-
-  void _fitMapToRoute() {
+  void _fitBounds() {
     if (_points.isEmpty || _mapController == null) return;
-
-    double minLat = _points.first.lat;
-    double maxLat = _points.first.lat;
-    double minLng = _points.first.lng;
-    double maxLng = _points.first.lng;
-
+    
+    double minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
     for (final p in _points) {
       if (p.lat < minLat) minLat = p.lat;
       if (p.lat > maxLat) maxLat = p.lat;
@@ -282,129 +138,155 @@ class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
       if (p.lng > maxLng) maxLng = p.lng;
     }
 
-    final bounds = LatLngBounds(
-      southwest: LatLng(minLat, minLng),
-      northeast: LatLng(maxLat, maxLng),
-    );
+    _mapController!.animateCamera(CameraUpdate.newLatLngBounds(
+      LatLngBounds(
+        southwest: LatLng(minLat, minLng),
+        northeast: LatLng(maxLat, maxLng),
+      ),
+      70,
+    ));
+  }
 
-    _mapController!
-        .animateCamera(CameraUpdate.newLatLngBounds(bounds, 60));
+  Set<Polyline> _getPolylines() {
+    return {
+      Polyline(
+        polylineId: const PolylineId('route'),
+        points: _points.map((e) => LatLng(e.lat, e.lng)).toList(),
+        color: Colors.blue.withOpacity(0.7),
+        width: 6,
+        jointType: JointType.round,
+      )
+    };
+  }
+
+  Set<Marker> _getMarkers() {
+    final markers = <Marker>{};
+    
+    // Live Position Marker (Blue Truck) - Priority 1
+    if (_livePosition != null) {
+      markers.add(Marker(
+        markerId: const MarkerId('live_pos'),
+        position: _livePosition!,
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+        infoWindow: const InfoWindow(title: 'Live Vehicle Position'),
+        zIndex: 10,
+      ));
+    }
+
+    if (_points.isEmpty) return markers;
+
+    // Start Marker (Green)
+    markers.add(Marker(
+      markerId: const MarkerId('start'),
+      position: LatLng(_points.first.lat, _points.first.lng),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+      infoWindow: InfoWindow(title: 'Started At', snippet: _startAddress),
+    ));
+
+    // End Marker (Destination)
+    markers.add(Marker(
+      markerId: const MarkerId('end'),
+      position: LatLng(_points.last.lat, _points.last.lng),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+      infoWindow: InfoWindow(title: 'Last At', snippet: _endAddress),
+    ));
+
+    // Stop Markers
+    for (var i = 0; i < _points.length; i++) {
+      final p = _points[i];
+      if (p.type == RoutePointType.stop) {
+        markers.add(Marker(
+          markerId: MarkerId('stop_$i'),
+          position: LatLng(p.lat, p.lng),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: InfoWindow(
+            title: 'Halt Point',
+            snippet: 'Duration: ${p.stopDurationSec} sec',
+          ),
+        ));
+      }
+    }
+
+    return markers;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Route Intelligence'),
+        backgroundColor: const Color(0xFF1A237E),
+        foregroundColor: Colors.white,
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _trip == null
+              ? const Center(child: Text('No trip details found.'))
+              : Stack(
+                  children: [
+                    GoogleMap(
+                      initialCameraPosition: CameraPosition(
+                        target: _livePosition ?? (_points.isNotEmpty ? LatLng(_points.first.lat, _points.first.lng) : const LatLng(12.9716, 77.5946)),
+                        zoom: 14,
+                      ),
+                      onMapCreated: (c) {
+                        _mapController = c;
+                        if (_points.isNotEmpty) _fitBounds();
+                      },
+                      polylines: _getPolylines(),
+                      markers: _getMarkers(),
+                    ),
+                    _buildTripSummaryCard(),
+                  ],
+                ),
+    );
   }
 
   Widget _buildTripSummaryCard() {
-    final trip = _trip!;
-    final stops =
-        _points.where((p) => p.type == RoutePointType.stop).length;
-    final checkpoints =
-        _points.where((p) => p.type == RoutePointType.checkpoint).length;
-
-    // Determine adherence score color
-    Color scoreColor;
-    if (trip.routeAdherenceScore >= 80) {
-      scoreColor = Colors.green;
-    } else if (trip.routeAdherenceScore >= 50) {
-      scoreColor = Colors.orange;
-    } else {
-      scoreColor = Colors.red;
-    }
-
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Container(
-        margin: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.15),
-              blurRadius: 15,
-              offset: const Offset(0, -3),
-            ),
-          ],
-        ),
+    if (_trip == null) return const SizedBox.shrink();
+    return Positioned(
+      bottom: 20,
+      left: 16,
+      right: 16,
+      child: Card(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        elevation: 8,
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Header ─────────────────────────────────────────────
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Vehicle: ${_trip!.truckId}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      Text('Driver ID: ${_trip!.driverId}', style: const TextStyle(color: Colors.grey)),
+                    ],
+                  ),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: trip.status == 'ACTIVE'
-                          ? Colors.green.shade100
-                          : Colors.blue.shade100,
-                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.green.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      trip.status,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: trip.status == 'ACTIVE'
-                            ? Colors.green.shade800
-                            : Colors.blue.shade800,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Driver: ${trip.driverId}',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                      'Score: ${_trip!.routeAdherenceScore.toInt()}%',
+                      style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-
-              // ── Stats Row ──────────────────────────────────────────
+              const Divider(height: 24),
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildStatChip(Icons.local_shipping, trip.truckId ?? 'N/A',
-                      'Truck'),
-                  const SizedBox(width: 12),
-                  _buildStatChip(Icons.access_time,
-                      _formatDuration(trip.startTime, trip.endTime), 'Duration'),
+                   _statEntry(Icons.stop_circle, '${_trip!.totalStops}', 'Stops'),
+                   _statEntry(Icons.gps_fixed, '${_points.length}', 'Points'),
+                   _statEntry(Icons.timer_outlined, _formatDuration(_trip!.startTime, _trip!.endTime), 'Duration'),
                 ],
-              ),
-              const SizedBox(height: 10),
-
-              // ── Counts Row ─────────────────────────────────────────
-              Row(
-                children: [
-                  _buildStatChip(
-                      Icons.stop_circle, '$stops', 'Stops',
-                      color: Colors.red),
-                  const SizedBox(width: 12),
-                  _buildStatChip(
-                      Icons.route, '$checkpoints', 'Checkpoints',
-                      color: Colors.blue),
-                  const SizedBox(width: 12),
-                  _buildStatChip(
-                    Icons.score,
-                    '${trip.routeAdherenceScore.toStringAsFixed(0)}%',
-                    'Adherence',
-                    color: scoreColor,
-                  ),
-                ],
-              ),
-
-              // ── Time Details ───────────────────────────────────────
-              const SizedBox(height: 10),
-              Text(
-                'Start: ${_formatTime(trip.startTime)} | End: ${trip.endTime != null ? _formatTime(trip.endTime!) : "Ongoing"}',
-                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
               ),
             ],
           ),
@@ -413,28 +295,22 @@ class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
     );
   }
 
-  Widget _buildStatChip(IconData icon, String value, String label,
-      {Color? color}) {
-    return Expanded(
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: color ?? Colors.grey[700]),
-          const SizedBox(width: 4),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(value,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: color ?? Colors.black87,
-                  )),
-              Text(label,
-                  style: TextStyle(fontSize: 10, color: Colors.grey[500])),
-            ],
-          ),
-        ],
-      ),
+  Widget _statEntry(IconData icon, String value, String label) {
+    return Column(
+      children: [
+        Icon(icon, color: const Color(0xFF1A237E), size: 20),
+        const SizedBox(height: 4),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      ],
     );
+  }
+
+  String _formatDuration(DateTime start, DateTime? end) {
+    final finish = end ?? DateTime.now();
+    final diff = finish.difference(start);
+    final hours = diff.inHours;
+    final minutes = diff.inMinutes % 60;
+    return '${hours}h ${minutes}m';
   }
 }

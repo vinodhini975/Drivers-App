@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geocoding/geocoding.dart';
 import 'dart:async';
 import '../services/auth_service.dart';
 import 'login_screen.dart';
@@ -24,6 +25,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
 
   final Map<String, Map<String, dynamic>> _driverDataCache = {};
   final Map<String, String?> _activeTripIds = {};
+  final Map<String, String> _addressCache = {};
 
   late AnimationController _pulseController;
 
@@ -84,13 +86,16 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
               'lastUpdate': data['lastUpdate'],
             };
 
+            _addressCache.putIfAbsent(doc.id, () => "Calculating area...");
+            _reverseGeocode(doc.id, lat, lng);
+
             _markers[doc.id] = Marker(
               markerId: MarkerId(doc.id),
               position: LatLng(lat, lng),
               icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
               infoWindow: InfoWindow(
                 title: data['vehicleId'],
-                snippet: 'Driver: ${data['name']}',
+                snippet: 'Area: ${_addressCache[doc.id]}',
                 onTap: () => _onDriverMarkerTapped(doc.id),
               ),
             );
@@ -109,21 +114,46 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
     });
   }
 
+  Future<void> _reverseGeocode(String docId, double lat, double lng) async {
+    // Basic throttle/skip if already known for similar point
+    if (_addressCache[docId] != null && _addressCache[docId] != "Calculating area...") {
+      return; 
+    }
+
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
+      if (placemarks.isNotEmpty) {
+        Placemark p = placemarks[0];
+        String addr = "${p.street}, ${p.subLocality}";
+        if (mounted) setState(() => _addressCache[docId] = addr);
+      }
+    } catch (e) {
+      debugPrint('Geocoding error for $docId: $e');
+    }
+  }
+
   Future<void> _fetchActiveTripId(String driverDocId) async {
     try {
+      // Find the most recent active trip for this driver
       final tripSnap = await _firestore
           .collection('trips')
           .where('driverId', isEqualTo: driverDocId)
           .where('status', isEqualTo: 'ACTIVE')
-          .orderBy('startTime', descending: true)
           .limit(1)
           .get();
 
-      if (tripSnap.docs.isNotEmpty) {
-        _activeTripIds[driverDocId] = tripSnap.docs.first.id;
+      if (mounted && tripSnap.docs.isNotEmpty) {
+        setState(() {
+          _activeTripIds[driverDocId] = tripSnap.docs.first.id;
+        });
+        debugPrint('[GOV_PORTAL] 🔗 Linked Trip ${tripSnap.docs.first.id} to Driver $driverDocId');
       }
     } catch (e) {
-      debugPrint('Error fetching trip: $e');
+      if (e.toString().contains('index')) {
+        debugPrint('[GOV_PORTAL] 🚨 CRITICAL: Firestore Composite Index missing! Click the link in your console to create it.');
+      } else {
+        debugPrint('[GOV_PORTAL] Error fetching trip: $e');
+      }
     }
   }
 
@@ -132,6 +162,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
     if (driverData == null) return;
 
     final tripId = _activeTripIds[docId];
+    final address = _addressCache[docId] ?? "N/A";
     
     _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(LatLng(driverData['lat'], driverData['lng']), 15),
@@ -147,6 +178,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
         vehicleId: driverData['vehicleId'],
         lat: driverData['lat'],
         lng: driverData['lng'],
+        address: address,
         tripId: tripId,
         lastUpdate: driverData['lastUpdate'],
       ),
@@ -243,13 +275,15 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
               itemBuilder: (context, index) {
                 final id = _driverDataCache.keys.elementAt(index);
                 final data = _driverDataCache[id]!;
+                final addr = _addressCache[id] ?? "N/A";
+
                 return ListTile(
                   leading: const CircleAvatar(
                     backgroundColor: _primaryBlue,
                     child: Icon(Icons.local_shipping, color: Colors.white, size: 20),
                   ),
                   title: Text(data['vehicleId']),
-                  subtitle: Text('Driver: ${data['name']}'),
+                  subtitle: Text('Location: $addr'),
                   trailing: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                     onPressed: () => _disableTracking(id),
@@ -328,6 +362,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
     required String vehicleId,
     required double lat,
     required double lng,
+    required String address,
     required String? tripId,
     required dynamic lastUpdate,
   }) {
@@ -360,10 +395,11 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
                   children: [
                     Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                     Text('Vehicle: $vehicleId', style: TextStyle(color: Colors.grey[600])),
+                    Text('Location: $address', style: TextStyle(color: Colors.blue[900], fontSize: 13, fontWeight: FontWeight.w500)),
                     if (lastUpdate != null)
                       Text(
                         'Last seen: ${_formatTimestamp(lastUpdate)}',
-                        style: TextStyle(color: Colors.blue[800], fontSize: 12, fontWeight: FontWeight.bold),
+                        style: TextStyle(color: Colors.grey[500], fontSize: 11),
                       ),
                   ],
                 ),

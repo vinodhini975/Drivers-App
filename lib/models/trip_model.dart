@@ -1,36 +1,24 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// Model representing a single driver trip (one duty session).
-///
-/// A trip is created when a driver starts duty and completed when duty ends.
-/// Route points (checkpoints + stops) are stored as a sub-collection under
-/// the trip document in Firestore.
 class TripModel {
   final String tripId;
   final String driverId;
-  final String? truckId;
+  final String truckId;
   final String? wardId;
   final String? routeId;
   final DateTime startTime;
   final DateTime? endTime;
-
-  /// 'ACTIVE' or 'COMPLETED'
-  final String status;
-
+  final String status; // ACTIVE, COMPLETED
   final int totalStops;
   final int totalCheckpoints;
-
-  /// 0–100 score indicating what percentage of route points fell within
-  /// the planned route corridor.
   final double routeAdherenceScore;
-
   final DateTime createdAt;
   final DateTime updatedAt;
 
   TripModel({
     required this.tripId,
     required this.driverId,
-    this.truckId,
+    required this.truckId,
     this.wardId,
     this.routeId,
     required this.startTime,
@@ -38,7 +26,7 @@ class TripModel {
     required this.status,
     this.totalStops = 0,
     this.totalCheckpoints = 0,
-    this.routeAdherenceScore = 0.0,
+    this.routeAdherenceScore = 100.0,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -93,29 +81,21 @@ class TripModel {
     };
   }
 
-  factory TripModel.fromMap(Map<String, dynamic> map, String docId) {
+  factory TripModel.fromMap(Map<String, dynamic> map, String id) {
     return TripModel(
-      tripId: docId,
+      tripId: map['tripId'] ?? id,
       driverId: map['driverId'] ?? '',
-      truckId: map['truckId'],
+      truckId: map['truckId'] ?? '',
       wardId: map['wardId'],
       routeId: map['routeId'],
-      startTime: map['startTime'] is Timestamp
-          ? (map['startTime'] as Timestamp).toDate()
-          : DateTime.now(),
-      endTime: map['endTime'] != null && map['endTime'] is Timestamp
-          ? (map['endTime'] as Timestamp).toDate()
-          : null,
+      startTime: (map['startTime'] as Timestamp).toDate(),
+      endTime: map['endTime'] != null ? (map['endTime'] as Timestamp).toDate() : null,
       status: map['status'] ?? 'ACTIVE',
       totalStops: map['totalStops'] ?? 0,
       totalCheckpoints: map['totalCheckpoints'] ?? 0,
-      routeAdherenceScore: (map['routeAdherenceScore'] ?? 0.0).toDouble(),
-      createdAt: map['createdAt'] is Timestamp
-          ? (map['createdAt'] as Timestamp).toDate()
-          : DateTime.now(),
-      updatedAt: map['updatedAt'] is Timestamp
-          ? (map['updatedAt'] as Timestamp).toDate()
-          : DateTime.now(),
+      routeAdherenceScore: (map['routeAdherenceScore'] as num?)?.toDouble() ?? 100.0,
+      createdAt: (map['createdAt'] as Timestamp).toDate(),
+      updatedAt: (map['updatedAt'] as Timestamp).toDate(),
     );
   }
 }

@@ -1,92 +1,41 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uuid/uuid.dart';
 import '../models/location_model.dart';
 import '../models/route_point_model.dart';
 import '../enums/route_point_type.dart';
 import '../config/tracking_constants.dart';
 import '../utils/geo_utils.dart';
-import 'database_service.dart';
 import 'gis_validation_service.dart';
+import 'database_service.dart';
 
-/// Core route intelligence engine.
-///
-/// Receives each raw [LocationModel] from the existing tracking pipeline,
-/// validates GPS quality, maintains internal state, and decides whether
-/// to create a CHECKPOINT, STOP, or IGNORE the point.
-///
-/// **This service does NOT modify the existing live tracking pipeline.**
-/// It runs in parallel: the existing `EnhancedLocationService` continues
-/// to update `drivers/{driverId}` with live location AND store raw points.
-/// This service only adds classified route points to `trips/{tripId}/routePoints`.
 class RouteProcessingService {
-  RouteProcessingService._();
-  static final RouteProcessingService _instance =
-      RouteProcessingService._();
-  factory RouteProcessingService() => _instance;
-
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final DatabaseService _dbService = DatabaseService.instance;
-  final Connectivity _connectivity = Connectivity();
   final GISValidationService _gisService = GISValidationService();
+  final DatabaseService _dbService = DatabaseService.instance;
+  final Uuid _uuid = const Uuid();
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // INTERNAL STATE
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// The last route point we persisted (checkpoint or stop).
-  RoutePointModel? _lastSavedPoint;
-
-  /// The last confirmed STOP point. Used for duplicate stop prevention.
+  // Internal State
+  RoutePointModel? _lastSavedRoutePoint;
+  DateTime? _lastCheckpointTimestamp;
+  
+  // Stop detection state
+  DateTime? _possibleStopStartTime;
+  RoutePointModel? _possibleStopAnchor;
+  bool _isInsideConfirmedStop = false;
   RoutePointModel? _lastConfirmedStop;
 
-  /// When the driver first appeared to start stopping.
-  DateTime? _possibleStopStartTime;
-
-  /// The anchor location for potential stop detection.
-  LocationModel? _possibleStopAnchor;
-
-  /// Whether we are currently inside a confirmed stop state.
-  /// Prevents creating multiple stops while the driver remains parked.
-  bool _isCurrentlyInStopState = false;
-
-  /// Counter for generating point IDs within a trip. Combined with tripId
-  /// to create unique IDs without the uuid package.
-  int _pointCounter = 0;
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LIFECYCLE
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Reset all internal state for a new trip.
-  /// Must be called when a new trip starts.
-  void resetForNewTrip(String tripId) {
-    _lastSavedPoint = null;
-    _lastConfirmedStop = null;
+  Future<void> resetForNewTrip(String tripId) async {
+    _lastSavedRoutePoint = null;
+    _lastCheckpointTimestamp = null;
     _possibleStopStartTime = null;
     _possibleStopAnchor = null;
-    _isCurrentlyInStopState = false;
-    _pointCounter = 0;
-    debugPrint('🔄 RouteProcessingService reset for trip: $tripId');
+    _isInsideConfirmedStop = false;
+    _lastConfirmedStop = null;
+    debugPrint('🔄 Route processing state reset for trip: $tripId');
   }
 
-  /// Generate a unique point ID using tripId + incrementing counter + timestamp.
-  String _generatePointId(String tripId) {
-    _pointCounter++;
-    return '${tripId}_rp_${_pointCounter}_${DateTime.now().millisecondsSinceEpoch}';
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // MAIN ENTRY POINT
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Process a single raw location from the existing tracking pipeline.
-  ///
-  /// This is called for EVERY location point — from both the native foreground
-  /// service and the Flutter periodic timer. The method decides whether to
-  /// create a CHECKPOINT, STOP, or ignore the point entirely.
-  ///
-  /// **This method never throws.** All errors are caught internally.
   Future<void> processLocation({
     required LocationModel location,
     required String tripId,
@@ -94,284 +43,204 @@ class RouteProcessingService {
     required String wardId,
     String? routeId,
   }) async {
-    try {
-      // ── STEP 1: Validate GPS accuracy ──────────────────────────────────
-      if (location.accuracy > TrackingConstants.maxAcceptedAccuracyMeters) {
-        debugPrint(
-            '📍 Ignored: accuracy ${location.accuracy.toStringAsFixed(1)}m > ${TrackingConstants.maxAcceptedAccuracyMeters}m');
-        return;
-      }
-
-      // ── STEP 2: GIS validation ─────────────────────────────────────────
-      final gisResult = _gisService.validatePoint(
-        lat: location.latitude,
-        lng: location.longitude,
-        wardId: wardId,
-        routeId: routeId,
-      );
-
-      // ── STEP 3: Try STOP detection first ───────────────────────────────
-      final handledAsStop = await _tryHandleStop(
-        location: location,
-        tripId: tripId,
-        driverId: driverId,
-        gis: gisResult,
-      );
-
-      // ── STEP 4: If not a stop, try CHECKPOINT ─────────────────────────
-      if (!handledAsStop) {
-        await _tryCreateCheckpoint(
-          location: location,
-          tripId: tripId,
-          driverId: driverId,
-          gis: gisResult,
-        );
-      }
-    } catch (e) {
-      debugPrint('❌ RouteProcessingService.processLocation error: $e');
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STOP DETECTION
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Attempts to detect and create a STOP point.
-  ///
-  /// Returns `true` if this location was consumed by stop logic (either
-  /// accumulating evidence or creating a confirmed stop), meaning the
-  /// caller should NOT also create a checkpoint.
-  Future<bool> _tryHandleStop({
-    required LocationModel location,
-    required String tripId,
-    required String driverId,
-    required GISValidationResult gis,
-  }) async {
-    // ── Moving too fast → not a stop ─────────────────────────────────────
-    if (location.speed > TrackingConstants.stopSpeedThresholdMps) {
-      _resetStopAnchor();
-      return false;
+    // 1. Quality Guard
+    if (location.accuracy > TrackingConstants.maxAcceptedAccuracyMeters) {
+      debugPrint('🚫 Point ignored: Low accuracy (${location.accuracy}m)');
+      return;
     }
 
-    // ── First slow point → set anchor ────────────────────────────────────
-    if (_possibleStopAnchor == null) {
-      _possibleStopAnchor = location;
-      _possibleStopStartTime = location.timestamp;
-      return true; // Consumed by stop logic, wait for more evidence
-    }
-
-    // ── Drifted too far from anchor → reset ──────────────────────────────
-    final drift = GeoUtils.distanceBetween(
-      _possibleStopAnchor!.latitude,
-      _possibleStopAnchor!.longitude,
-      location.latitude,
-      location.longitude,
+    // 2. GIS Validation
+    final gisResult = await _gisService.validatePoint(
+      point: location.toLatLng(),
+      wardId: wardId,
+      routeId: routeId,
     );
 
-    if (drift > TrackingConstants.stopRadiusMeters) {
-      _resetStopAnchor();
-      return false;
-    }
+    // 3. Stop detection logic
+    final bool handledAsStop = await _tryHandleStop(
+      location: location,
+      tripId: tripId,
+      driverId: driverId,
+      gisResult: gisResult,
+    );
 
-    // ── Check if accumulated enough time ─────────────────────────────────
-    final durationSec =
-        location.timestamp.difference(_possibleStopStartTime!).inSeconds;
+    if (handledAsStop) return;
 
-    if (durationSec < TrackingConstants.stopMinDurationSeconds) {
-      return true; // Still accumulating — don't create checkpoint either
-    }
-
-    // ── Duplicate stop prevention ────────────────────────────────────────
-    if (_lastConfirmedStop != null) {
-      final distFromLastStop = GeoUtils.distanceBetween(
-        _lastConfirmedStop!.lat,
-        _lastConfirmedStop!.lng,
-        location.latitude,
-        location.longitude,
-      );
-      if (distFromLastStop <
-          TrackingConstants.stopDuplicateResetDistanceMeters) {
-        // Still near the last confirmed stop — swallow point silently
-        return true;
-      }
-    }
-
-    // ── Create confirmed stop (only once per halt) ───────────────────────
-    if (!_isCurrentlyInStopState) {
-      final stopPoint = RoutePointModel(
-        id: _generatePointId(tripId),
-        tripId: tripId,
-        driverId: driverId,
-        lat: _possibleStopAnchor!.latitude,
-        lng: _possibleStopAnchor!.longitude,
-        timestamp: _possibleStopStartTime!,
-        type: RoutePointType.stop,
-        speed: 0.0,
-        accuracy: location.accuracy,
-        stopDurationSec: durationSec,
-        isInsideWard: gis.isInsideWard,
-        isInsideRouteBuffer: gis.isInsideRouteBuffer,
-        routeDeviationMeters: gis.routeDeviationMeters,
-      );
-
-      await _persistRoutePoint(stopPoint);
-      _lastConfirmedStop = stopPoint;
-      _lastSavedPoint = stopPoint;
-      _isCurrentlyInStopState = true;
-
-      // Increment trip stop counter (fire-and-forget)
-      _incrementTripCounter(tripId, 'totalStops');
-
-      debugPrint(
-          '🛑 STOP created at (${stopPoint.lat.toStringAsFixed(5)}, ${stopPoint.lng.toStringAsFixed(5)}) duration: ${durationSec}s');
-    }
-
-    return true;
+    // 4. Checkpoint logic
+    await _tryCreateCheckpoint(
+      location: location,
+      tripId: tripId,
+      driverId: driverId,
+      gisResult: gisResult,
+    );
   }
 
-  /// Reset stop detection state.
-  void _resetStopAnchor() {
-    _possibleStopAnchor = null;
-    _possibleStopStartTime = null;
-    _isCurrentlyInStopState = false;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CHECKPOINT CREATION
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Creates a checkpoint if the driver has moved far enough or enough time
-  /// has elapsed since the last saved point.
   Future<void> _tryCreateCheckpoint({
     required LocationModel location,
     required String tripId,
     required String driverId,
-    required GISValidationResult gis,
+    required GISValidationResult gisResult,
   }) async {
-    if (_lastSavedPoint != null) {
-      final dist = GeoUtils.distanceBetween(
-        _lastSavedPoint!.lat,
-        _lastSavedPoint!.lng,
-        location.latitude,
-        location.longitude,
+    final bool shouldSave = _lastSavedRoutePoint == null ||
+        GeoUtils.calculateHaversineDistance(
+                location.toLatLng(), 
+                _lastSavedRoutePoint!.toLatLng()
+            ) > TrackingConstants.checkpointDistanceMeters ||
+        (_lastCheckpointTimestamp != null &&
+            DateTime.now().difference(_lastCheckpointTimestamp!).inSeconds >
+                TrackingConstants.checkpointTimeSeconds);
+
+    if (shouldSave) {
+      final point = RoutePointModel(
+        id: _uuid.v4(),
+        tripId: tripId,
+        driverId: driverId,
+        lat: location.latitude,
+        lng: location.longitude,
+        timestamp: DateTime.now(),
+        type: RoutePointType.checkpoint,
+        speed: location.speed,
+        accuracy: location.accuracy,
+        isInsideWard: gisResult.isInsideWard,
+        isInsideRouteBuffer: gisResult.isInsideRouteBuffer,
+        routeDeviationMeters: gisResult.routeDeviationMeters,
       );
-      final timeDiff =
-          location.timestamp.difference(_lastSavedPoint!.timestamp).inSeconds;
 
-      // Only create checkpoint if moved enough OR enough time passed
-      if (dist < TrackingConstants.checkpointDistanceMeters &&
-          timeDiff < TrackingConstants.checkpointTimeSeconds) {
-        return; // Not enough movement or time
-      }
+      await _persistRoutePoint(point);
+      _lastSavedRoutePoint = point;
+      _lastCheckpointTimestamp = DateTime.now();
+      debugPrint('[TRIP_INTEL] 📍 Checkpoint saved: ${point.lat}, ${point.lng}');
     }
-
-    final cpPoint = RoutePointModel(
-      id: _generatePointId(tripId),
-      tripId: tripId,
-      driverId: driverId,
-      lat: location.latitude,
-      lng: location.longitude,
-      timestamp: location.timestamp,
-      type: RoutePointType.checkpoint,
-      speed: location.speed,
-      accuracy: location.accuracy,
-      stopDurationSec: 0,
-      isInsideWard: gis.isInsideWard,
-      isInsideRouteBuffer: gis.isInsideRouteBuffer,
-      routeDeviationMeters: gis.routeDeviationMeters,
-    );
-
-    await _persistRoutePoint(cpPoint);
-    _lastSavedPoint = cpPoint;
-
-    // Increment trip checkpoint counter (fire-and-forget)
-    _incrementTripCounter(tripId, 'totalCheckpoints');
-
-    debugPrint(
-        '📍 CHECKPOINT at (${cpPoint.lat.toStringAsFixed(5)}, ${cpPoint.lng.toStringAsFixed(5)}) speed: ${cpPoint.speed.toStringAsFixed(1)} m/s');
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PERSISTENCE
-  // ═══════════════════════════════════════════════════════════════════════════
+  Future<bool> _tryHandleStop({
+    required LocationModel location,
+    required String tripId,
+    required String driverId,
+    required GISValidationResult gisResult,
+  }) async {
+    final bool isLowSpeed = location.speed < TrackingConstants.stopSpeedThresholdMps;
 
-  /// Persist a route point to Firestore (online) or SQLite (offline).
+    if (isLowSpeed) {
+      if (_possibleStopAnchor == null) {
+        // Potential stop started
+        _possibleStopAnchor = RoutePointModel(
+           id: _uuid.v4(),
+           tripId: tripId,
+           driverId: driverId,
+           lat: location.latitude,
+           lng: location.longitude,
+           timestamp: DateTime.now(),
+           type: RoutePointType.stop,
+        );
+        _possibleStopStartTime = DateTime.now();
+        return false;
+      }
+
+      // Already in potential stop state, check if we stayed in radius
+      final distance = GeoUtils.calculateHaversineDistance(
+        location.toLatLng(), _possibleStopAnchor!.toLatLng());
+      
+      if (distance <= TrackingConstants.stopRadiusMeters) {
+        final duration = DateTime.now().difference(_possibleStopStartTime!).inSeconds;
+        
+        if (duration >= TrackingConstants.stopMinDurationSeconds && !_isInsideConfirmedStop) {
+          // Validate if it's not a duplicate too close to the previous stop
+          if (_lastConfirmedStop != null) {
+             final gapD = GeoUtils.calculateHaversineDistance(
+               location.toLatLng(), _lastConfirmedStop!.toLatLng());
+             if (gapD < TrackingConstants.stopDuplicateResetDistanceMeters) {
+                return false; 
+             }
+          }
+          
+          // CONFIRMED STOP
+          final stopPoint = _possibleStopAnchor!.copyWith(
+            timestamp: DateTime.now(),
+            stopDurationSec: duration,
+            accuracy: location.accuracy,
+            isInsideWard: gisResult.isInsideWard,
+            isInsideRouteBuffer: gisResult.isInsideRouteBuffer,
+            routeDeviationMeters: gisResult.routeDeviationMeters,
+          );
+          
+          await _persistRoutePoint(stopPoint);
+          _lastSavedRoutePoint = stopPoint;
+          _lastConfirmedStop = stopPoint;
+          _isInsideConfirmedStop = true;
+          debugPrint('[TRIP_INTEL] 🛑 STOP marker confirmed and saved!');
+          return true;
+        }
+      } else {
+        // Moved out of radius while slow - reset stop detection
+        _possibleStopAnchor = null;
+        _possibleStopStartTime = null;
+        _isInsideConfirmedStop = false;
+      }
+    } else {
+      // Speed picked up - end any stop detection state
+      _possibleStopAnchor = null;
+      _possibleStopStartTime = null;
+      _isInsideConfirmedStop = false;
+    }
+    
+    return false;
+  }
+
   Future<void> _persistRoutePoint(RoutePointModel point) async {
-    final connectivityResult = await _connectivity.checkConnectivity();
-
-    if (connectivityResult != ConnectivityResult.none) {
-      try {
-        await _saveRoutePointToFirestore(point)
-            .timeout(const Duration(seconds: 5));
-        return; // Success
-      } catch (e) {
-        debugPrint('⚠️ Firestore write failed, falling back to SQLite: $e');
-      }
+    // 1. Try Firestore (Live)
+    try {
+      await _firestore
+          .collection('trips')
+          .doc(point.tripId)
+          .collection('routePoints')
+          .doc(point.id)
+          .set(point.toMap());
+    } catch (e) {
+      debugPrint('⚠️ Firestore route point save failed (offline): $e');
     }
 
-    // Offline fallback
-    await _saveRoutePointToLocal(point);
-  }
-
-  /// Write route point to Firestore: `trips/{tripId}/routePoints/{pointId}`
-  Future<void> _saveRoutePointToFirestore(RoutePointModel point) async {
-    await _firestore
-        .collection('trips')
-        .doc(point.tripId)
-        .collection('routePoints')
-        .doc(point.id)
-        .set(point.toMap());
-  }
-
-  /// Write route point to local SQLite for later sync.
-  Future<void> _saveRoutePointToLocal(RoutePointModel point) async {
+    // 2. Always persist to Local SQLite for sync stability and offline history
     await _dbService.insertOfflineRoutePoint(point);
   }
 
-  /// Increment a counter field on the trip document (fire-and-forget).
-  void _incrementTripCounter(String tripId, String field) {
-    _firestore.collection('trips').doc(tripId).update({
-      field: FieldValue.increment(1),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }).catchError((e) {
-      debugPrint('⚠️ Trip counter increment failed: $e');
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // OFFLINE SYNC (called from EnhancedLocationService on connectivity change)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /// Push all unsynced route points from SQLite to Firestore.
-  /// Returns the number of points successfully synced.
-  Future<int> syncOfflineRoutePoints() async {
+  Future<void> syncOfflineRoutePoints() async {
     try {
-      final connectivityResult = await _connectivity.checkConnectivity();
-      if (connectivityResult == ConnectivityResult.none) return 0;
-
       final unsynced = await _dbService.getUnsyncedRoutePoints();
-      if (unsynced.isEmpty) return 0;
+      if (unsynced.isEmpty) return;
 
-      int count = 0;
-      for (final point in unsynced) {
+      int syncCount = 0;
+      for (var point in unsynced) {
         try {
-          await _saveRoutePointToFirestore(point)
-              .timeout(const Duration(seconds: 3));
+          // Push to Firestore
+          await _firestore
+              .collection('trips')
+              .doc(point.tripId)
+              .collection('routePoints')
+              .doc(point.id)
+              .set(point.toMap());
+
+          // Mark as synced locally
           await _dbService.markRoutePointSynced(point.id);
-          count++;
+          syncCount++;
         } catch (e) {
-          debugPrint('⚠️ Route point sync failed, stopping batch: $e');
-          break; // Stop on first failure to avoid spamming
+          debugPrint('⚠️ Individual route point sync failed: $e');
+          // continue with others
         }
       }
-
-      if (count > 0) {
-        debugPrint('✅ Synced $count offline route points');
+      if (syncCount > 0) {
+        debugPrint('✅ Synced $syncCount offline route points to Firestore');
       }
-      return count;
     } catch (e) {
-      debugPrint('❌ syncOfflineRoutePoints error: $e');
-      return 0;
+      debugPrint('❌ Error during route points sync: $e');
     }
   }
+}
+
+extension on LocationModel {
+  LatLng toLatLng() => LatLng(latitude, longitude);
+}
+
+extension on RoutePointModel {
+  LatLng toLatLng() => LatLng(lat, lng);
 }
