@@ -11,7 +11,6 @@ import '../services/auth_service.dart';
 import '../services/enhanced_location_service.dart';
 import '../services/native_location_service.dart';
 import '../services/trip_service.dart';
-import '../services/route_processing_service.dart';
 import '../services/duty_service.dart';
 import 'login_screen.dart';
 import 'location_permission_screen.dart';
@@ -29,7 +28,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AuthService _authService = AuthService();
   final EnhancedLocationService _locationService = EnhancedLocationService();
   final TripService _tripService = TripService();
-  final RouteProcessingService _routeProcessingService = RouteProcessingService();
   final DutyService _dutyService = DutyService();
 
   StreamSubscription? _sentinelSubscription;
@@ -214,7 +212,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         wardId: widget.driver.ward,
         routeId: null,
       );
-      _routeProcessingService.resetForNewTrip(trip.tripId);
     } catch (e) {
       debugPrint('⚠️ Trip start error: $e');
     }
@@ -223,24 +220,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _locationService.captureLocation(widget.driver.id);
     await NativeLocationService.startTracking(widget.driver.id);
     
-    // Subscribe to high-frequency location stream for detailed history (roaming path)
+    // High-frequency location listener for detailed history (roaming path)
     _locationSubscription = NativeLocationService.getLocationUpdates().listen((event) async {
        if (event != null && _isTrackingActive) {
          final loc = LocationModel.fromMap({
            ...event,
            'driverId': widget.driver.id,
-           'timestamp': Timestamp.now(), // Use fresh timestamp from listener
+           'timestamp': Timestamp.now(),
          });
-         // Process into detailed route history sub-collection
-         final activeTripId = await _tripService.getActiveTripId();
-         if (activeTripId != null) {
-            await _routeProcessingService.processLocation(
-              location: loc,
-              tripId: activeTripId,
-              driverId: widget.driver.id,
-              wardId: widget.driver.ward,
-            );
-         }
+         // DEPLOY: Direct capture feed is now handled inside EnhancedLocationService
+         // to ensure consistent storage even when this stream is backgrounded.
+         await _locationService.captureLocation(widget.driver.id);
        }
     });
 

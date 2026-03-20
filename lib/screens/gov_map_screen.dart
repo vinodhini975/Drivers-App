@@ -139,6 +139,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
           .collection('trips')
           .where('driverId', isEqualTo: driverDocId)
           .where('status', isEqualTo: 'ACTIVE')
+          .orderBy('startTime', descending: true) // Get LATEST trip
           .limit(1)
           .get();
 
