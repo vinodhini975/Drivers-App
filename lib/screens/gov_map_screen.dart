@@ -69,7 +69,7 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
         final bool isFirstLoad = _markers.isEmpty && snapshot.docs.isNotEmpty;
         _markers.clear();
         _driverDataCache.clear();
-        _activeTripIds.clear();
+        // NOTE: Do NOT clear _addressCache — we want to reuse geocoded names
 
         for (var doc in snapshot.docs) {
           final data = doc.data();
@@ -115,20 +115,47 @@ class _GovMapScreenState extends State<GovMapScreen> with SingleTickerProviderSt
   }
 
   Future<void> _reverseGeocode(String docId, double lat, double lng) async {
-    // Basic throttle/skip if already known for similar point
+    // Skip if we already have a real address for this driver
     if (_addressCache[docId] != null && _addressCache[docId] != "Calculating area...") {
-      return; 
+      return;
     }
 
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
-      if (placemarks.isNotEmpty) {
+      if (placemarks.isNotEmpty && mounted) {
         Placemark p = placemarks[0];
-        String addr = "${p.street}, ${p.subLocality}";
-        if (mounted) setState(() => _addressCache[docId] = addr);
+        // Build a rich area name: subLocality (colony/area), locality (city)
+        String area = [
+          p.subLocality,
+          p.locality,
+        ].where((s) => s != null && s.isNotEmpty).join(', ');
+
+        if (area.isEmpty) area = p.street ?? 'Unknown Area';
+
+        setState(() {
+          _addressCache[docId] = area;
+          // CRITICAL: Rebuild the marker with the real area name
+          final data = _driverDataCache[docId];
+          if (data != null) {
+            _markers[docId] = Marker(
+              markerId: MarkerId(docId),
+              position: LatLng(data['lat'], data['lng']),
+              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+              infoWindow: InfoWindow(
+                title: data['vehicleId'],
+                snippet: 'Area: $area',
+                onTap: () => _onDriverMarkerTapped(docId),
+              ),
+            );
+          }
+        });
+        debugPrint('[GOV_PORTAL] 📍 Geocoded $docId → $area');
       }
     } catch (e) {
-      debugPrint('Geocoding error for $docId: $e');
+      debugPrint('[GOV_PORTAL] ⚠️ Geocoding failed for $docId: $e');
+      if (mounted) {
+        setState(() => _addressCache[docId] = 'Location unavailable');
+      }
     }
   }
 
