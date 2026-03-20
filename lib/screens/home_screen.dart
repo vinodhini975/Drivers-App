@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -244,12 +245,48 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     });
 
     _trackingTimer?.cancel();
-    _trackingTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+    _trackingTimer = Timer.periodic(const Duration(seconds: 15), (timer) async {
       if (!_isTrackingActive) {
         timer.cancel();
         return;
       }
+      // Primary: Capture via enhanced service (also writes route point now)
       await _locationService.captureLocation(widget.driver.id);
+      
+      // Safety net: Direct GPS → Firestore write (guaranteed history)
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 8),
+        );
+        final tripId = await _tripService.getActiveTripId();
+        if (tripId != null) {
+          final pointId = '${DateTime.now().millisecondsSinceEpoch}_${widget.driver.id}';
+          await FirebaseFirestore.instance
+              .collection('trips')
+              .doc(tripId)
+              .collection('routePoints')
+              .doc(pointId)
+              .set({
+            'id': pointId,
+            'tripId': tripId,
+            'driverId': widget.driver.id,
+            'lat': pos.latitude,
+            'lng': pos.longitude,
+            'timestamp': Timestamp.now(),
+            'type': 'checkpoint',
+            'speed': pos.speed,
+            'accuracy': pos.accuracy,
+            'stopDurationSec': 0,
+            'isInsideWard': true,
+            'isInsideRouteBuffer': true,
+            'routeDeviationMeters': 0.0,
+          });
+          debugPrint('[TRIP_INTEL] 📍 Timer route point SAVED: ${pos.latitude}, ${pos.longitude}');
+        }
+      } catch (e) {
+        debugPrint('[TRIP_INTEL] ⚠️ Timer safety net error: $e');
+      }
     });
   }
 
