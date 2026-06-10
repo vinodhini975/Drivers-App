@@ -55,7 +55,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _startReactiveSentinel();
     _startPermissionMonitoring();
     
-    debugPrint('[TRIP_INTEL] 💎 Watching Driver Doc: ${widget.driver.id}');
   }
 
   @override
@@ -91,7 +90,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     
     if (mounted) {
       setState(() => _currentSessionId = savedSession);
-      debugPrint('💎 Local Session ID (Restored): $_currentSessionId');
     }
   }
 
@@ -162,8 +160,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final data = doc.data()!;
         _processRemoteData(data);
       }
-    } catch (e) {
-      debugPrint('Sync error: $e');
     } finally {
       if (mounted) setState(() => _isSyncing = false);
     }
@@ -176,16 +172,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final String serverSessionId = (data['activeSessionId'] ?? "").toString().trim();
     final String localSessionId = _currentSessionId!.trim();
 
-    debugPrint('[TRIP_INTEL] 📡 CHECK: Remote=$remoteEnabled | ServerSID=$serverSessionId | LocalSID=$localSessionId');
 
     if (remoteEnabled && serverSessionId == localSessionId) {
       if (!_isTrackingActive) {
-        debugPrint('[TRIP_INTEL] ✅ SUCCESS: Session Matched. Activating tracker.');
         _triggerStartTracking();
       }
     } else {
       if (_isTrackingActive) {
-        debugPrint('[TRIP_INTEL] 🛑 STOP: Remote disabled or Session Mismatch.');
         _triggerStopTracking();
       }
     }
@@ -213,7 +206,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         routeId: null,
       );
     } catch (e) {
-      debugPrint('⚠️ Trip start error: $e');
     }
 
     await _dutyService.startDuty(widget.driver.id);
@@ -272,10 +264,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             'isInsideRouteBuffer': true,
             'routeDeviationMeters': 0.0,
           });
-          debugPrint('[TRIP_INTEL] 📍 Timer route point SAVED: ${pos.latitude}, ${pos.longitude}');
         }
       } catch (e) {
-        debugPrint('[TRIP_INTEL] ⚠️ Timer safety net error: $e');
       }
     });
   }
@@ -288,7 +278,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await _tripService.completeTrip(currentTripId);
       }
     } catch (e) {
-      debugPrint('⚠️ Trip completion error: $e');
     }
 
     // Reset local session after tracking ends so a new one is required tomorrow/next time

@@ -24,7 +24,9 @@ class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
   String _startAddress = "Loading start location...";
   String _endAddress = "Loading end location...";
   StreamSubscription? _liveSubscription;
+  StreamSubscription? _pointsSubscription;
   LatLng? _livePosition;
+  bool _hasInitialBoundsFitted = false;
 
   @override
   void initState() {
@@ -36,6 +38,7 @@ class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
   @override
   void dispose() {
     _liveSubscription?.cancel();
+    _pointsSubscription?.cancel();
     _mapController?.dispose();
     super.dispose();
   }
@@ -84,31 +87,45 @@ class _RouteHistoryScreenState extends State<RouteHistoryScreen> {
         return;
       }
 
-      final pointsSnap = await FirebaseFirestore.instance
+      if (mounted) {
+        setState(() {
+          _trip = TripModel.fromMap(tripDoc.data()!, tripDoc.id);
+        });
+      }
+
+      // 🔄 REAL-TIME: Listen to route points for a live-growing path
+      _pointsSubscription?.cancel();
+      _pointsSubscription = FirebaseFirestore.instance
           .collection('trips')
           .doc(widget.tripId)
           .collection('routePoints')
           .orderBy('timestamp', descending: false)
-          .get();
+          .snapshots()
+          .listen((pointsSnap) {
+        if (mounted) {
+          setState(() {
+            _points.clear();
+            for (var doc in pointsSnap.docs) {
+              _points.add(RoutePointModel.fromMap(doc.data(), doc.id));
+            }
+            _isLoading = false;
+          });
 
-      if (mounted) {
-        setState(() {
-          _trip = TripModel.fromMap(tripDoc.data()!, tripDoc.id);
-          _points.clear();
-          for (var doc in pointsSnap.docs) {
-            _points.add(RoutePointModel.fromMap(doc.data(), doc.id));
+          if (_points.isNotEmpty) {
+            // Geocode once if possible
+            if (_startAddress == "Loading start location...") _geocodeStartPoint();
+            _geocodeEndPoint(); // Always update end address as it moves
+
+            // Auto-fit bounds ONLY the first time or if the truck goes off-screen
+            if (!_hasInitialBoundsFitted) {
+              _fitBounds();
+              _hasInitialBoundsFitted = true;
+            }
           }
-          _isLoading = false;
-        });
-      }
-
-      if (_points.isNotEmpty) {
-        _fitBounds();
-        _geocodeStartPoint();
-        _geocodeEndPoint();
-      }
+        }
+      });
     } catch (e) {
-      debugPrint('Error fetching history: $e');
+      
       if (mounted) setState(() => _isLoading = false);
     }
   }

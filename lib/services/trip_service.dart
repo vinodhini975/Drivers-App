@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_model.dart';
-import 'package:flutter/foundation.dart';
 
 class TripService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -30,10 +30,8 @@ class TripService {
     try {
       await _firestore.collection('trips').doc(tripId).set(trip.toMap());
       await _saveActiveTripId(tripId);
-      debugPrint('✅ Trip started on Firestore: $tripId');
     } catch (e) {
-      debugPrint('❌ Failed to start trip on Firestore: $e');
-      // Even if firestore fails (offline), we should save locally
+      debugPrint("❌ TripService.startTrip ERROR: $e");
       await _saveActiveTripId(tripId);
     }
 
@@ -55,10 +53,8 @@ class TripService {
         'updatedAt': FieldValue.serverTimestamp(),
       });
       await clearActiveTripId();
-      debugPrint('🏁 Trip completed: $tripId');
     } catch (e) {
-      debugPrint('❌ Failed to complete trip: $e');
-      // Mark as completed locally at least
+      debugPrint("❌ TripService.completeTrip ERROR: $e");
       await clearActiveTripId();
     }
   }

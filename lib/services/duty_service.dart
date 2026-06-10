@@ -60,7 +60,7 @@ class DutyService {
       );
 
       if (kDebugMode) {
-        debugPrint('Duty started for driver: $driverId at $now');
+        
       }
 
       return {
@@ -70,7 +70,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error starting duty: $e');
+        
       }
       return {
         'success': false,
@@ -137,7 +137,7 @@ class DutyService {
       await prefs.remove(_dutyStartTimeKey);
 
       if (kDebugMode) {
-        debugPrint('Duty ended for driver: $driverId at $now');
+        
       }
 
       return {
@@ -147,7 +147,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error ending duty: $e');
+        
       }
       return {
         'success': false,
@@ -165,7 +165,7 @@ class DutyService {
       return prefs.getBool(_isDutyActiveKey) ?? false;
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error checking duty status: $e');
+        
       }
       return false;
     }
@@ -182,7 +182,7 @@ class DutyService {
       return DateTime.fromMillisecondsSinceEpoch(timestamp);
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error getting duty start time: $e');
+        
       }
       return null;
     }
@@ -223,7 +223,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error checking battery: $e');
+        
       }
       return {
         'level': 100,
