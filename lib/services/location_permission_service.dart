@@ -1,6 +1,5 @@
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter/foundation.dart';
 
 class LocationPermissionService {
   /// Check if all required location permissions are granted
@@ -11,7 +10,7 @@ class LocationPermissionService {
       
       return fineLocation.isGranted && backgroundLocation.isGranted;
     } catch (e) {
-      debugPrint('Error checking permissions: $e');
+      
       return false;
     }
   }
@@ -34,7 +33,7 @@ class LocationPermissionService {
                    isGpsEnabled,
       );
     } catch (e) {
-      debugPrint('Error checking detailed permissions: $e');
+      
       return PermissionStatusDetails(
         fineLocation: PermissionStatus.denied,
         coarseLocation: PermissionStatus.denied,

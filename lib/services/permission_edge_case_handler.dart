@@ -1,6 +1,5 @@
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class PermissionEdgeCaseHandler {
@@ -219,7 +218,7 @@ extension LocationPermissionService on Object {
                    isGpsEnabled,
       );
     } catch (e) {
-      debugPrint('Error checking detailed permissions: $e');
+      
       return PermissionStatusDetails(
         fineLocation: PermissionStatus.denied,
         coarseLocation: PermissionStatus.denied,
@@ -238,7 +237,7 @@ extension LocationPermissionService on Object {
       
       return fineLocation.isGranted && backgroundLocation.isGranted && isGpsEnabled;
     } catch (e) {
-      debugPrint('Error checking permissions: $e');
+      
       return false;
     }
   }

@@ -8,7 +8,6 @@ import 'screens/gov_map_screen.dart';
 import 'screens/location_permission_screen.dart';
 import 'services/auth_service.dart';
 import 'services/location_permission_service.dart';
-import 'models/driver_model.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 void main() async {

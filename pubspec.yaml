@@ -2,7 +2,7 @@ name: driver_app
 description: "Driver location tracking app for waste collection vehicles."
 publish_to: 'none'
 
-version: 1.1.0+2
+version: 1.1.0+3
 
 environment:
   sdk: ">=3.10.4 <4.0.0"
@@ -22,6 +22,7 @@ dependencies:
 
   # ===== LOCATION + PERMISSIONS =====
   geolocator: ^12.0.0
+  geocoding: ^3.0.0
   permission_handler: ^11.3.1
 
   # ===== STORAGE =====
@@ -49,6 +50,8 @@ dependencies:
   # ===== CRYPTO =====
   crypto: ^3.0.3
 
+  uuid: any
+  http: ^1.2.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

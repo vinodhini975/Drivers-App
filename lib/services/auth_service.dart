@@ -2,7 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter/foundation.dart';
 import '../models/driver_model.dart';
 
 class AuthService {
@@ -20,7 +19,7 @@ class AuthService {
   Future<void> requestOtp(String mobile) async {
     // In a real app, this would call Firebase Auth verifyPhoneNumber
     // For now, we simulate sending an OTP
-    debugPrint('OTP requested for $mobile');
+    
   }
 
   Future<bool> verifyOtp(String otp) async {
@@ -386,7 +385,7 @@ class AuthService {
           'status': 'active',
         });
       } catch (e) {
-        debugPrint('Warning: Could not update last login: $e');
+        
       }
       
       // Save to local storage using the main branch's session logic

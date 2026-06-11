@@ -1,5 +1,4 @@
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart';
 
 class NativeLocationService {
   static const MethodChannel _channel = MethodChannel('location_tracking_service');
@@ -11,8 +10,8 @@ class NativeLocationService {
         'username': driverId,
       });
       return result;
-    } on PlatformException catch (e) {
-      debugPrint('Error starting tracking: ${e.message}');
+    } on PlatformException {
+      
       return null;
     }
   }
@@ -21,8 +20,8 @@ class NativeLocationService {
     try {
       final result = await _channel.invokeMethod('stopTracking');
       return result;
-    } on PlatformException catch (e) {
-      debugPrint('Error stopping tracking: ${e.message}');
+    } on PlatformException {
+      
       return null;
     }
   }
@@ -31,7 +30,7 @@ class NativeLocationService {
     try {
       final result = await _channel.invokeMethod('isTracking');
       return result ?? false;
-    } on PlatformException catch (e) {
+    } on PlatformException {
       return false;
     }
   }
@@ -42,7 +41,7 @@ class NativeLocationService {
       // SAFE CONVERSION: Converts the internal _Map<Object?, Object?> to Map<String, dynamic>
       return Map<String, dynamic>.from(event as Map);
     }).handleError((error) {
-      debugPrint('Error receiving location updates: $error');
+      
       return null;
     });
   }

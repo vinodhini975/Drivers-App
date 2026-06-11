@@ -3,11 +3,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
 import '../services/auth_service.dart';
+import '../services/trip_service.dart';
 
 /// Service to handle duty management for drivers
 class DutyService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final Battery _battery = Battery();
+  final TripService _tripService = TripService();
 
   static const String _isDutyActiveKey = 'is_duty_active';
   static const String _dutyStartTimeKey = 'duty_start_time';
@@ -19,6 +21,7 @@ class DutyService {
     try {
       final authService = AuthService();
       final currentDriver = await authService.getCurrentDriver();
+      final String truckId = currentDriver?.vehicleId ?? 'UNKNOWN_V';
 
       // 🔐 Authorization check (FIXED)
       if (currentDriver == null || currentDriver.id != driverId) {
@@ -43,6 +46,12 @@ class DutyService {
         'lastDutyUpdate': FieldValue.serverTimestamp(),
       });
 
+      // 🗺️ Start Route Intelligence Trip
+      await _tripService.startTrip(
+        driverId: driverId,
+        truckId: truckId,
+      );
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_isDutyActiveKey, true);
       await prefs.setInt(
@@ -51,7 +60,7 @@ class DutyService {
       );
 
       if (kDebugMode) {
-        debugPrint('Duty started for driver: $driverId at $now');
+        
       }
 
       return {
@@ -61,7 +70,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error starting duty: $e');
+        
       }
       return {
         'success': false,
@@ -117,12 +126,18 @@ class DutyService {
         'lastDutyUpdate': FieldValue.serverTimestamp(),
       });
 
+      // 🏁 Complete Route Intelligence Trip
+      final activeTripId = await _tripService.getActiveTripId();
+      if (activeTripId != null) {
+        await _tripService.completeTrip(activeTripId);
+      }
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_isDutyActiveKey, false);
       await prefs.remove(_dutyStartTimeKey);
 
       if (kDebugMode) {
-        debugPrint('Duty ended for driver: $driverId at $now');
+        
       }
 
       return {
@@ -132,7 +147,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error ending duty: $e');
+        
       }
       return {
         'success': false,
@@ -150,7 +165,7 @@ class DutyService {
       return prefs.getBool(_isDutyActiveKey) ?? false;
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error checking duty status: $e');
+        
       }
       return false;
     }
@@ -167,7 +182,7 @@ class DutyService {
       return DateTime.fromMillisecondsSinceEpoch(timestamp);
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error getting duty start time: $e');
+        
       }
       return null;
     }
@@ -208,7 +223,7 @@ class DutyService {
       };
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('Error checking battery: $e');
+        
       }
       return {
         'level': 100,

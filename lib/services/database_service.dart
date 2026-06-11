@@ -1,6 +1,5 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'package:flutter/foundation.dart';
 import '../models/location_model.dart';
 import '../models/route_point_model.dart';
 
@@ -62,7 +61,7 @@ class DatabaseService {
   /// Adds the offline_route_points table without touching existing data.
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      debugPrint('📦 Upgrading database from v$oldVersion to v$newVersion: adding offline_route_points table');
+      
       await _createRoutePointsTable(db);
     }
   }

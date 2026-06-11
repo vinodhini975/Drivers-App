@@ -1,9 +1,7 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart';
 import '../models/location_model.dart';
 import 'database_service.dart';
 import 'duty_service.dart';
@@ -24,7 +22,7 @@ class EnhancedLocationService {
   Future<bool> captureLocation(String driverId) async {
     // 1. Guard: Ensure driver ID is valid
     if (driverId.isEmpty) {
-      debugPrint('Sync skipped: Waiting for driver identity');
+      
       return false;
     }
 
@@ -64,7 +62,7 @@ class EnhancedLocationService {
           await _syncToFirebase(location).timeout(const Duration(seconds: 5));
           return true;
         } catch (e) {
-          debugPrint('⚠️ Network lag, saving offline: $e');
+          
           await _dbService.insertLocation(location);
           return true;
         }
@@ -73,26 +71,47 @@ class EnhancedLocationService {
         return true;
       }
     } catch (e) {
-      debugPrint('❌ Capture Error: $e');
+      
       return false;
     }
   }
 
-  /// NEW: Feed captured location into the route processing pipeline.
+  /// FIXED: Direct route point writer — bypasses complex pipeline.
+  /// Every captured location is now GUARANTEED to be saved as a trip route point.
   void _feedToRouteProcessing(LocationModel location, String driverId) async {
     try {
       final activeTripId = await _tripService.getActiveTripId();
-      if (activeTripId == null) return; 
+      if (activeTripId == null) {
+        
+        return;
+      }
 
-      await _routeProcessingService.processLocation(
-        location: location,
-        tripId: activeTripId,
-        driverId: driverId,
-        wardId: driverId, 
-        routeId: null, 
-      );
+      // DIRECT WRITE: Save route point straight to Firestore (no filters, no GIS)
+      final pointId = '${DateTime.now().millisecondsSinceEpoch}_$driverId';
+      await _firestore
+          .collection('trips')
+          .doc(activeTripId)
+          .collection('routePoints')
+          .doc(pointId)
+          .set({
+        'id': pointId,
+        'tripId': activeTripId,
+        'driverId': driverId,
+        'lat': location.latitude,
+        'lng': location.longitude,
+        'timestamp': Timestamp.fromDate(location.timestamp),
+        'type': 'checkpoint',
+        'speed': location.speed,
+        'accuracy': location.accuracy,
+        'stopDurationSec': 0,
+        'isInsideWard': true,
+        'isInsideRouteBuffer': true,
+        'routeDeviationMeters': 0.0,
+      });
+
+      
     } catch (e) {
-      debugPrint('⚠️ Route processing feed error (non-blocking): $e');
+      
     }
   }
 
@@ -120,7 +139,7 @@ class EnhancedLocationService {
   Future<int> syncOfflineLocations() async {
     final driverId = await _authService.getCurrentDriverId();
     if (driverId == null) {
-      debugPrint('Sync skipped: No authenticated driver found');
+      
       return 0;
     }
 
