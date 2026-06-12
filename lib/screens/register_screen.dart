@@ -24,6 +24,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _confirmPasswordController = TextEditingController();
   final _vehicleIdController = TextEditingController();
   final _licenseController = TextEditingController();
+  final _wardController = TextEditingController();
   
   bool _isLoading = false;
 
@@ -45,6 +46,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _confirmPasswordController.dispose();
     _vehicleIdController.dispose();
     _licenseController.dispose();
+    _wardController.dispose();
     super.dispose();
   }
 
@@ -72,7 +74,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         vehicleId: _vehicleIdController.text.trim().toUpperCase(),
         licenseNumber: _licenseController.text.trim().toUpperCase(),
         zone: 'Default Zone', 
-        ward: 'Default Ward',
+        ward: _wardController.text.trim(),
       );
 
       if (!mounted) return;
@@ -235,6 +237,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   icon: Icons.credit_card,
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'License number is required';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+
+                _buildTextField(
+                  controller: _wardController,
+                  label: 'Ward Number',
+                  hint: 'e.g., Ward-01',
+                  icon: Icons.location_city,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) return 'Ward number is required';
                     return null;
                   },
                 ),
