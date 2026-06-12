@@ -14,6 +14,7 @@ class LocationTrackingService : Service() {
     companion object {
         const val NOTIFICATION_ID = 888
         const val CHANNEL_ID = "DriverTrackingChannel"
+        const val ACTION_LOCATION_UPDATE = "com.example.driver_app.LOCATION_UPDATE"
         private const val TAG = "LocationService"
     }
 
@@ -32,13 +33,13 @@ class LocationTrackingService : Service() {
             override fun onLocationResult(locationResult: LocationResult) {
                 locationResult.lastLocation?.let { location ->
                     Log.d(TAG, "Hardware GPS Tick (30s): ${location.latitude}, ${location.longitude}")
-                    syncToFirebase(location.latitude, location.longitude, location.accuracy)
+                    syncToFirebase(location.latitude, location.longitude, location.accuracy, location.speed)
                 }
             }
         }
     }
 
-    private fun syncToFirebase(lat: Double, lng: Double, acc: Float) {
+    private fun syncToFirebase(lat: Double, lng: Double, acc: Float, speed: Float) {
         if (driverId.isEmpty()) return
 
         val data = hashMapOf<String, Any>(
@@ -54,6 +55,16 @@ class LocationTrackingService : Service() {
             .addOnFailureListener {
                 Log.e(TAG, "Sync deferred (Offline mode). Firebase will auto-sync later.")
             }
+
+        // Send broadcast to MainActivity for Dart EventChannel processing
+        val intent = Intent(ACTION_LOCATION_UPDATE).apply {
+            putExtra("lat", lat)
+            putExtra("lng", lng)
+            putExtra("acc", acc)
+            putExtra("speed", speed)
+            putExtra("driverId", driverId)
+        }
+        sendBroadcast(intent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
